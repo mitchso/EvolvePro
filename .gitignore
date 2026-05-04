@@ -38,3 +38,6 @@ venv/
 *.venv
 env/
 *.env
+
+# local files
+evolvepro_local

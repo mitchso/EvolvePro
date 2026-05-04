@@ -7,9 +7,10 @@ dependencies:
   - python=3.10
   - numpy>=1.22,<=1.24.3
   - pytorch
-  - cudatoolkit
+#  - cudatoolkit <- this is not compatible with mac GPUs (nvidia only)
   - pathlib
   - biopython
+  - pandas  # added this myself
   - pip
   - pip:
     - ankh

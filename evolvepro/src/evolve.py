@@ -385,7 +385,7 @@ def evolve_experimental(
     
     # Load embeddings
     embeddings = load_experimental_embeddings(embeddings_base_path, embeddings_file_name, rename_WT)
-    print(f"Embeddings loaded: {embeddings.shape}")
+    #print(f"Embeddings loaded: {embeddings.shape}")
     
     # Load experimental data
     all_experimental_data = []
@@ -396,8 +396,8 @@ def evolve_experimental(
     
     # Create iteration dataframes
     iteration, labels = create_iteration_dataframes(all_experimental_data, embeddings.index)
-    print(f"iteration shape: {iteration.shape}")
-    print(f"Labels shape: {labels.shape}")
+    #print(f"iteration shape: {iteration.shape}")
+    #print(f"Labels shape: {labels.shape}")
     
     # Perform top layer analysis
     this_round_variants, df_test, df_sorted_all = top_layer(
@@ -412,13 +412,13 @@ def evolve_experimental(
     
     # Print results
     print(f"\nTested variants in this round: {len(this_round_variants)}")
-    print(this_round_variants)
-    print(f"\nTop {number_of_variants} variants predicted by the model:")
-    print(df_test.sort_values(by=['y_pred'], ascending=False).head(number_of_variants))
+    #print(this_round_variants)
+    #print(f"\nTop {number_of_variants} variants predicted by the model:")
+    #print(df_test.sort_values(by=['y_pred'], ascending=False).head(number_of_variants))
     
     # Save results if an output_dir is provided
     if output_dir is not None:
-        output_dir = os.path.join(output_dir, protein_name, round_name)
+        output_dir = os.path.join(output_dir, round_name)
         os.makedirs(output_dir, exist_ok=True)
         iteration.to_csv(os.path.join(output_dir, 'iteration.csv'))
         this_round_variants.to_csv(os.path.join(output_dir, 'this_round_variants.csv'))
@@ -427,7 +427,7 @@ def evolve_experimental(
         df_sorted_all.to_csv(os.path.join(output_dir, 'df_sorted_all.csv'))
         print(f"\nData saved to {output_dir}")
     
-    return this_round_variants, df_test, df_sorted_all
+    # return this_round_variants, df_test, df_sorted_all
 
 def evolve_experimental_multi(
     protein_name: str,

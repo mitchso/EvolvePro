@@ -471,3 +471,5 @@ def suggest_initial_mutants(fasta_file, num_mutants=10, random_seed=None):
     print(f"\nSuggested {num_mutants} mutants for testing:")
     for i, mutant in enumerate(suggested_mutants, 1):
         print(f"{i}. {mutant.id}")
+
+    return [mut.id for mut in suggested_mutants]

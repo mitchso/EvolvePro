@@ -9,6 +9,8 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from scipy.spatial.distance import cdist
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # Function for selecting mutants in the first round
 def first_round(labels, embeddings, explicit_variants=None, num_mutants_per_round=16, first_round_strategy='random', embedding_type = None,random_seed=None):
@@ -90,7 +92,8 @@ def top_layer(iter_train, iter_test, embeddings_pd, labels_pd, measured_var, reg
 
         # Check if embedding row names and label variants are identical
         if label_variants == embedding_variants:
-            print('Embeddings and labels are aligned')
+            pass
+            # print('Embeddings and labels are aligned')
         else:
             print('Embeddings and labels are not aligned')
             print('Exiting.')
