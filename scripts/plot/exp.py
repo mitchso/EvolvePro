@@ -1,6 +1,6 @@
 import pandas as pd
 import os
-from evolvepro.src.plot import read_exp_data, plot_variants_by_iteration
+from evolvepro.src.plot_unused import read_exp_data, plot_variants_by_iteration
 import matplotlib.pyplot as plt
 
 output_dir = '/orcd/archive/abugoot/001/Projects/Matteo/Github/EvolvePro/output/exp_plots/'

@@ -1,249 +1,355 @@
+"""
+data.py — File loading and data alignment for EvolvePro.
+
+This module handles two distinct input scenarios:
+
+  1. DMS (deep mutational scanning) datasets — pre-processed CSV/PT files used for
+     benchmarking active-learning strategies in simulation.
+
+  2. Experimental datasets — Excel round files produced by wet-lab assays, used to
+     guide real directed-evolution campaigns.
+
+See README.md for full file format specifications.
+"""
+
 import os
-from typing import List, Dict, Any, Tuple, Union
-from Bio import SeqIO
-import pandas as pd
+import warnings
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
-import torch
+import pandas as pd
+from Bio import SeqIO
+import re as _re
 
-def load_dms_data(dataset_name: str, model_name: str, embeddings_path: str, labels_path: str, 
-                  embeddings_file_type: str, embeddings_type_pt: str = 'both') -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+def _is_valid_variant(value: str) -> bool:
+    """Return True if *value* is 'WT' or valid mutation notation (single or multi).
+
+    Valid forms:
+      - ``"WT"``
+      - A single mutation token: one uppercase letter, one or more digits, one
+        uppercase letter (e.g. ``"A107M"``).
+      - Multiple such tokens joined by underscores (e.g. ``"A107M_F73C"``).
     """
-    Load DMS data from files and align embeddings with labels.
+    if value == 'WT':
+        return True
+    tokens = value.split('_')
+    _MUTATION_TOKEN_RE = _re.compile(r'^[A-Z]\d+[A-Z]$')
+    return all(_MUTATION_TOKEN_RE.match(t) for t in tokens)
+
+
+def validate_csv(file_path: str, file_type: str) -> pd.DataFrame:
+    """Load and validate a CSV file used by EvolvePro.
+
+    Two ``file_type`` values are accepted:
+
+    ``"experimental"``
+        The CSV must have exactly one column named ``"variant"`` (case-insensitive)
+        and one column named ``"activity"`` (case-insensitive).  The ``variant``
+        column must contain only ``"WT"`` or standard mutation notation
+        (``<WT residue><position><mut residue>``, optionally chained with ``_``).
+        The ``activity`` column must be fully numeric.  Additional columns are
+        allowed without restriction.
+
+    ``"embeddings"``
+        The first column is treated as the variant index.  It must contain only
+        valid variant strings (same rules as above).  All remaining columns must
+        be numeric.
 
     Args:
-        dataset_name (str): Name of the dataset.
-        model_name (str): Name of the model used for embeddings.
-        embeddings_path (str): Path to the embeddings file.
-        labels_path (str): Path to the labels file.
-        embeddings_file_type (str): File type of embeddings ('csv' or 'pt').
-        embeddings_type_pt (str, optional): Type of embeddings to use if 'pt' file ('average', 'mutated', or 'both'). Defaults to 'both'.
+        file_path: Absolute or relative path to the CSV file.
+        file_type: Either ``"experimental"`` or ``"embeddings"``.
 
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: Aligned embeddings and labels DataFrames.
+        The loaded DataFrame, with column names normalised to lowercase for
+        ``"experimental"`` files (``variant`` and ``activity`` are always
+        lowercase on return).
+
+    Raises:
+        FileNotFoundError: If *file_path* does not exist.
+        ValueError: If *file_type* is not one of the accepted values, or if
+            the file fails any structural or content check.
     """
-    # Generate file paths
-    labels_file = os.path.join(labels_path, f'{dataset_name}_labels.csv')
-    embeddings_file = os.path.join(embeddings_path, f'{dataset_name}_{model_name}.{embeddings_file_type}')
+    valid_types = ('experimental', 'embeddings')
+    if file_type not in valid_types:
+        raise ValueError(
+            f"file_type must be one of {valid_types}, got '{file_type}'."
+        )
 
-    # Load labels
-    labels = pd.read_csv(labels_file)
-    
-    # Process embeddings based on file type
-    if embeddings_file_type == "csv":
-        embeddings = pd.read_csv(embeddings_file, index_col=0)
-    elif embeddings_file_type == "pt":
-        embeddings = torch.load(embeddings_file)
-        embeddings = process_pt_embeddings(embeddings, embeddings_type_pt)
-        if embeddings is None:
-            return None, None
-        embeddings = pd.DataFrame.from_dict(embeddings, orient='index')
-    else:
-        print("Invalid file type. Please choose either 'csv' or 'pt'")
-        return None, None
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"CSV file not found: '{file_path}'."
+        )
 
-    # Align embeddings with labels
-    labels = labels[labels['activity'].notna()]
-    embeddings = embeddings[embeddings.index.isin(labels['variant'])]
+    df = pd.read_csv(file_path) if file_type == 'embeddings' else pd.read_excel(file_path)
 
-    # Sort labels and embeddings by variant
-    labels = labels.sort_values(by=['variant']).reset_index(drop=True)
-    embeddings = embeddings.loc[labels['variant']]
+    if df.empty:
+        raise ValueError(
+            f"CSV file '{file_path}' is empty."
+        )
 
-    # Check if embeddings and labels are aligned
-    if labels['variant'].tolist() == embeddings.index.tolist():
-        print('Embeddings and labels are aligned')
-        return embeddings, labels
-    else:
-        print('Embeddings and labels are not aligned')
-        return None, None
+    if file_type == 'experimental':
+        # --- Normalise column names for case-insensitive matching ---
+        lower_col_map = {c: c.lower() for c in df.columns}
+        df = df.rename(columns=lower_col_map)
 
-def process_pt_embeddings(embeddings: Dict, embeddings_type_pt: str) -> Dict:
-    """
-    Process embeddings from .pt file based on the specified type.
+        if 'variant' not in df.columns:
+            raise ValueError(
+                f"Experimental CSV '{file_path}' must contain a 'variant' column "
+                f"(case-insensitive). Found columns: {df.columns.tolist()}."
+            )
+        if 'activity' not in df.columns:
+            raise ValueError(
+                f"Experimental CSV '{file_path}' must contain an 'activity' column "
+                f"(case-insensitive). Found columns: {df.columns.tolist()}."
+            )
 
-    Args:
-        embeddings (Dict): Dictionary containing embeddings.
-        embeddings_type_pt (str): Type of embeddings to use ('average', 'mutated', or 'both').
+        # --- Validate variant column ---
+        invalid = [v for v in df['variant'].astype(str) if not _is_valid_variant(v)]
+        if invalid:
+            shown = invalid[:10]
+            suffix = ' (and more)' if len(invalid) > 10 else ''
+            raise ValueError(
+                f"Experimental CSV '{file_path}' contains invalid value(s) in the "
+                f"'variant' column: {shown}{suffix}.\n"
+                f"Each entry must be 'WT', a single mutation token "
+                f"(e.g. 'A107M'), or multiple tokens joined by underscores "
+                f"(e.g. 'A107M_F73C'). No other values are accepted."
+            )
 
-    Returns:
-        Dict: Processed embeddings dictionary.
-    """
-    # Get average or mutated embeddings
-    if embeddings_type_pt == 'average':
-        return {key: value['average'].numpy() for key, value in embeddings.items()}
-    elif embeddings_type_pt == 'mutated':
-        return {key: value['mutated'].numpy() for key, value in embeddings.items()}
-    # Concatenate average and mutated embeddings
-    elif embeddings_type_pt == 'both':
-        return {key: np.concatenate((value['average'].numpy(), value['mutated'].numpy())) for key, value in embeddings.items()}
-    else:
-        print("Invalid embeddings_type_pt. Please choose 'average', 'mutated', or 'both'")
-        return None
+        # --- Validate activity column ---
+        activity_numeric = pd.to_numeric(df['activity'], errors='coerce')
+        bad_activity = df.loc[activity_numeric.isna() & df['activity'].notna(), 'activity'].tolist()
+        if bad_activity:
+            shown = bad_activity[:10]
+            suffix = ' (and more)' if len(bad_activity) > 10 else ''
+            raise ValueError(
+                f"Experimental CSV '{file_path}': 'activity' column contains "
+                f"non-numeric value(s): {shown}{suffix}."
+            )
 
-def load_experimental_embeddings(base_path: str, embeddings_file_name: str, rename_WT: bool = False) -> pd.DataFrame:
-    """
-    Load experimental embeddings from file.
+    else:  # embeddings
+        # --- First column is the variant index ---
+        variant_col = df.columns[0]
+        invalid = [v for v in df[variant_col].astype(str) if not _is_valid_variant(v)]
+        if invalid:
+            shown = invalid[:10]
+            suffix = ' (and more)' if len(invalid) > 10 else ''
+            raise ValueError(
+                f"Embeddings CSV '{file_path}' contains invalid value(s) in the "
+                f"first (variant index) column '{variant_col}': {shown}{suffix}.\n"
+                f"Each entry must be 'WT', a single mutation token "
+                f"(e.g. 'A107M'), or multiple tokens joined by underscores "
+                f"(e.g. 'A107M_F73C'). No other values are accepted."
+            )
 
-    Args:
-        base_path (str): Base path to the data directory.
-        embeddings_file_name (str): Name of the embeddings file.
+        # --- All remaining columns must be numeric ---
+        data_cols = df.columns[1:]
+        non_numeric = [
+            c for c in data_cols
+            if not pd.api.types.is_numeric_dtype(df[c])
+        ]
+        if non_numeric:
+            raise ValueError(
+                f"Embeddings CSV '{file_path}' contains non-numeric data in "
+                f"column(s): {non_numeric}. All embedding dimensions must be numeric."
+            )
+        missing_vals = df[data_cols].isnull().sum().sum()
+        if missing_vals > 0:
+            raise ValueError(
+                f"Embeddings CSV '{file_path}' contains {missing_vals} missing "
+                f"value(s) in the embedding columns. All values must be present."
+            )
 
-    Returns:
-        pd.DataFrame: Experimental embeddings.
-    """
-    file_path = os.path.join(base_path, embeddings_file_name)
-    embeddings = pd.read_csv(file_path, index_col=0)
-
-    # Rename 'WT Wild-type sequence' to 'WT'
-    if rename_WT:
-        embeddings = embeddings.rename(index={'WT Wild-type sequence': 'WT'})
-
-    return embeddings
-
-def load_experimental_data(base_path: str, round_file_name: str, wt_fasta_path: str, single_mutant: bool = True) -> pd.DataFrame:
-    """
-    Load experimental data from file and process variants.
-
-    Args:
-        base_path (str): Base path to the data directory.
-        round_file_name (str): Name of the round file.
-        wt_fasta_path (str): Path to the wild-type FASTA file.
-        single_mutant (bool, optional): Flag for single mutant processing. Defaults to True.
-
-    Returns:
-        pd.DataFrame: Processed experimental data.
-    """
-    # Load experimental data
-    file_path = os.path.join(base_path, round_file_name)
-    df = pd.read_excel(file_path)
-
-    # Load wild-type sequence
-    WT_sequence = str(SeqIO.read(wt_fasta_path, "fasta").seq)
-
-    # Process variants
-    if single_mutant:
-        df['updated_variant'] = df['Variant'].apply(lambda x: process_variant(x, WT_sequence))
-    else:
-        df.rename(columns={'Variant': 'updated_variant'}, inplace=True)
+        # Set the first column as the index to match expected caller conventions
+        df = df.set_index(variant_col)
 
     return df
 
-def process_variant(variant: str, WT_sequence: str) -> str:
-    """
-    Process a single variant.
+
+def load_experimental_embeddings(file: str) -> pd.DataFrame:
+
+    embeddings = validate_csv(file, 'embeddings')
+    #
+    # if 'WT' not in embeddings.index:
+    #     warnings.warn(
+    #         f"No 'WT' row found in embeddings file '{embeddings_file_name}'. "
+    #         f"A WT embedding is required. Ensure your FASTA included a WT record "
+    #         f"before running PLM extraction.",
+    #         UserWarning,
+    #         stacklevel=2,
+    #     )
+
+    return embeddings
+
+def load_experimental_data(file: str, wt_fasta_path: str) -> pd.DataFrame:
+    df = validate_csv(file, 'experimental')
+    return df
+
+
+def create_iteration_dataframes(
+    df_list: List[pd.DataFrame],
+    expected_variants: List[str],
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """Build the iteration-tracking and labels DataFrames from multiple round files.
+
+    Each element of ``df_list`` represents one assay round (in chronological order).
+    WT is assigned iteration 0 and must appear only in the first round file.
+    All other variants are assigned an iteration equal to the 1-based round index.
+
+    The resulting ``labels`` DataFrame covers *all* variants in the embeddings index
+    (``expected_variants``).  Variants not yet tested have ``NaN`` for activity and
+    iteration, and will be treated as the unlabelled pool for model predictions.
 
     Args:
-        variant (str): Variant string.
-        WT_sequence (str): Wild-type sequence.
+        df_list: List of DataFrames produced by :func:`load_experimental_data`,
+            one per assay round, in chronological order.
+        expected_variants: Ordered list of every variant name in the embeddings
+            index.  Determines the final row order of the returned ``labels``.
 
     Returns:
-        str: Processed variant string.
+        ``(iteration, labels)`` on success, or raises on invalid input.
+
+        - ``iteration`` — columns: ``variant``, ``iteration`` (float).
+          Contains only the tested variants.
+        - ``labels`` — columns: ``variant``, ``activity``, ``activity_binary``,
+          ``activity_scaled``, ``iteration``.  Contains every variant in
+          ``expected_variants``; untested rows have ``NaN`` activity/iteration.
     """
-    # Check if variant is WT
-    if variant == 'WT':
-        return variant
-    
-    # Extract position and amino acids
-    position = int(variant[:-1])
-    wt_aa = WT_sequence[position - 1]
-    return wt_aa + variant
+    if not df_list:
+        raise ValueError(
+            "df_list is empty. At least one round DataFrame must be provided."
+        )
 
-def create_iteration_dataframes(df_list: List[pd.DataFrame], expected_variants: List[str]) -> Tuple[Union[pd.DataFrame, None], Union[pd.DataFrame, None]]:
-    """
-    Create training and testing dataframes for iterative learning.
+    processed_rounds = []
 
-    Args:
-        df_list (List[pd.DataFrame]): List of DataFrames containing experimental data from each round.
-        expected_variants (List[str]): List of all expected variant names.
-
-    Returns:
-        Tuple[Union[pd.DataFrame, None], Union[pd.DataFrame, None]]: 
-            - iteration DataFrame: Contains variant and iteration information for training.
-            - labels DataFrame: Contains variant, activity, and iteration information for testing.
-            Returns (None, None) if duplicates are found.
-    """
-    processed_dfs = []
-
-    # Process each round's data
     for round_num, df in enumerate(df_list, start=1):
         df_copy = df.copy()
-        
-        # Set iteration for WT in first round, exclude WT from subsequent rounds
+
+        wt_rows = df_copy[df_copy['variant'] == 'WT']
+
         if round_num == 1:
-            df_copy.loc[df_copy['updated_variant'] == 'WT', 'iteration'] = 0
+            if wt_rows.empty:
+                warnings.warn(
+                    f"Round 1 does not contain a 'WT' entry. WT should appear in "
+                    f"the first round file with Variant = 'WT' (see README §4). "
+                    f"Proceeding without a WT reference point.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            df_copy.loc[df_copy['variant'] == 'WT', 'iteration'] = 0
         else:
-            df_copy = df_copy[df_copy['updated_variant'] != 'WT']
-        
-        df_copy.loc[df_copy['updated_variant'] != 'WT', 'iteration'] = round_num
+            if not wt_rows.empty:
+                # WT in subsequent rounds is silently dropped per spec — warn instead.
+                warnings.warn(
+                    f"Round {round_num} contains a 'WT' entry. WT should only "
+                    f"appear in round 1; the WT row will be dropped from round "
+                    f"{round_num} (see README §4).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            df_copy = df_copy[df_copy['variant'] != 'WT']
+
+        df_copy.loc[df_copy['variant'] != 'WT', 'iteration'] = float(round_num)
         df_copy['iteration'] = df_copy['iteration'].astype(float)
-        df_copy.rename(columns={'updated_variant': 'variant'}, inplace=True)
-        
-        processed_dfs.append(df_copy)
+        processed_rounds.append(df_copy)
 
-    # Combine all processed dataframes
-    combined_df = pd.concat(processed_dfs, ignore_index=True)
+    combined = pd.concat(processed_rounds, ignore_index=True)
 
-    # Check for duplicates
-    if has_duplicates(combined_df):
-        return None, None
+    # Raises ValueError on duplicates (no longer returns True/False).
+    _check_duplicates(combined)
 
-    # Create iter_train dataframe
-    iteration = combined_df[['variant', 'iteration']]
+    # --- Warn about tested variants missing from the embeddings index ---
+    tested_variants = set(combined['variant'])
+    expected_set = set(expected_variants)
+    missing_from_embeddings = tested_variants - expected_set - {'WT'}
+    if missing_from_embeddings:
+        shown = sorted(missing_from_embeddings)[:10]
+        suffix = ' (and more)' if len(missing_from_embeddings) > 10 else ''
+        warnings.warn(
+            f"{len(missing_from_embeddings)} tested variant(s) are not present in "
+            f"the embeddings index and will be excluded from model training: "
+            f"{shown}{suffix}. "
+            f"Ensure every tested variant has a corresponding row in the embeddings "
+            f"CSV (see README §3, Step 4).",
+            UserWarning,
+            stacklevel=2,
+        )
 
-    # Create iter_test dataframe
-    labels = combined_df[['variant', 'activity', 'iteration']]
+    iteration = combined[['variant', 'iteration']]
 
-    # Add a activity_binary and activity_scaled column to labels
-    labels['activity_binary'] = labels['activity'].apply(lambda x: 1 if x >= 1 else 0)
-    labels['activity_scaled'] = labels['activity'].apply(lambda x: (x - labels['activity'].min()) / (labels['activity'].max() - labels['activity'].min()))
+    labels = combined[['variant', 'activity', 'iteration']].copy()
+    act_min = labels['activity'].min()
+    act_max = labels['activity'].max()
 
-    # Add missing variants to iter_test
-    labels = add_missing_variants(labels, expected_variants)
+    if act_max == act_min:
+        warnings.warn(
+            f"All measured activity values are identical ({act_min}). "
+            f"'activity_scaled' will be 0.0 for every variant because min-max "
+            f"scaling is undefined when max == min. Check that the 'activity' "
+            f"column contains meaningful variation across your round files.",
+            UserWarning,
+            stacklevel=2,
+        )
 
-    # Reorder iter_test based on expected variants
-    labels = labels.set_index('variant').reindex(expected_variants, fill_value=np.nan).reset_index()
-    labels.rename(columns={'index': 'variant'}, inplace=True)
-    
+    labels['activity_binary'] = (labels['activity'] >= 1).astype(float)
+    labels['activity_scaled'] = (labels['activity'] - act_min) / (act_max - act_min)
+
+    # Inform the user how many variants are in the unlabelled prediction pool.
+    n_untested = len(expected_set - tested_variants)
+    if n_untested > 0:
+        print(f"{n_untested} variant(s) in the embeddings index have not yet been "
+            f"tested and will be treated as the unlabelled prediction pool.")
+
+    labels = _add_missing_variants(labels, expected_variants)
+    labels = (
+        labels.set_index('variant')
+        .reindex(expected_variants, fill_value=np.nan)
+        .reset_index()
+    )
+    labels = labels.rename(columns={'index': 'variant'})
+
     return iteration, labels
 
-def has_duplicates(df: pd.DataFrame) -> bool:
-    """
-    Check for duplicates in the 'variant' column of the dataframe.
+
+def _check_duplicates(df: pd.DataFrame) -> None:
+    """Raise ValueError if any variant appears more than once across all rounds.
 
     Args:
-        df (pd.DataFrame): DataFrame to check for duplicates.
-
-    Returns:
-        bool: True if duplicates are found, False otherwise.
+        df: Combined DataFrame with ``variant`` and ``iteration`` columns.
     """
-    # Find duplicates in the 'variant' column
     duplicates = df[df.duplicated(subset=['variant'], keep=False)]
-    
-    # Print duplicates if found
     if not duplicates.empty:
-        print("Duplicates found in variant column:")
-        print(duplicates)
-        print("Exiting.")
-        return True
-    return False
+        raise ValueError(
+            f"Duplicate variant(s) found across round files — each variant may "
+            f"only be measured once (see README §4):\n"
+            + duplicates[['variant', 'iteration']].to_string(index=False)
+            + "\nRemove the duplicate entry from the appropriate round file and retry."
+        )
 
-def add_missing_variants(df: pd.DataFrame, expected_variants: List[str]) -> pd.DataFrame:
-    """
-    Add missing variants to the DataFrame.
+
+def _add_missing_variants(
+    df: pd.DataFrame, expected_variants: List[str]
+) -> pd.DataFrame:
+    """Append rows for variants that appear in the embeddings but not yet in labels.
 
     Args:
-        df (pd.DataFrame): DataFrame to add missing variants to.
-        expected_variants (List[str]): List of all expected variant names.
+        df: Existing labels DataFrame with columns ``variant``, ``activity``,
+            ``activity_binary``, ``activity_scaled``, ``iteration``.
+        expected_variants: Full list of variant names from the embeddings index.
 
     Returns:
-        pd.DataFrame: DataFrame with missing variants added.
+        Extended DataFrame including placeholder rows (all ``NaN``) for untested
+        variants.
     """
-    missing_variants = set(expected_variants) - set(df['variant'])
-    missing_df = pd.DataFrame({
-        'variant': list(missing_variants),
+    missing = set(expected_variants) - set(df['variant'])
+    if not missing:
+        return df
+
+    placeholder = pd.DataFrame({
+        'variant': list(missing),
         'activity': np.nan,
         'activity_binary': np.nan,
         'activity_scaled': np.nan,
-        'iteration': np.nan
+        'iteration': np.nan,
     })
-    return pd.concat([df, missing_df], ignore_index=True)
+    return pd.concat([df, placeholder], ignore_index=True)

@@ -46,6 +46,7 @@ def create_parser():
     )
 
     parser.add_argument("--toks_per_batch", type=int, default=4096, help="maximum batch size")
+
     parser.add_argument(
         "--repr_layers",
         type=int,
@@ -61,6 +62,7 @@ def create_parser():
         help="specify which representations to return",
         required=True,
     )
+
     parser.add_argument(
         "--truncation_seq_length",
         type=int,

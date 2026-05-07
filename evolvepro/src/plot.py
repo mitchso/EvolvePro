@@ -1,513 +1,417 @@
-import os
+"""
+plot.py — Plotting utilities for EvolvePro.
+"""
+
+from __future__ import annotations
+
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import itertools
-from evolvepro.src.data import load_experimental_data
 
-pd.options.mode.chained_assignment = None  # default='warn'
 
-def read_dms_data(directory, datasets, model, experiment, group_columns, aggregate_columns, 
-              file_pattern="{dataset}_{model}_{experiment}.csv"):
-    """
-    Read and process data from multiple CSV files.
-    
-    Args:
-    directory (str): Directory containing the CSV files
-    datasets (list): List of dataset names
-    model (str): Model name
-    experiment (str): Experiment name
-    group_columns (list): Columns to group by
-    aggregate_columns (list): Columns to aggregate
-    file_pattern (str): File name pattern for CSV files
-    
-    Returns:
-    pd.DataFrame: Processed and concatenated data from all datasets
-    """
-    all_dfs = []
-    
-    for dataset in datasets:
-        file_name = file_pattern.format(dataset=dataset, model=model, experiment=experiment)
-        file_path = os.path.join(directory, file_name)
-        
-        try:
-            df = pd.read_csv(file_path)
-            df = process_dataframe(df, group_columns, aggregate_columns)
-            df['dataset'] = dataset  
-            df['model'] = model  
-            df['experiment'] = experiment
-            all_dfs.append(df)
-        except FileNotFoundError:
-            print(f"File {file_name} not found. Skipping...")
-        except Exception as e:
-            print(f"Error processing {file_name}: {str(e)}")
-    
-    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+def _count_mutations(variant: str) -> int:
+    """Return the number of mutations encoded in a variant string.
 
-def read_exp_data(round_base_path, round_file_names_single, wt_fasta_path, round_file_names_multi=None):
-    """
-    Read and process experimental data from multiple files.
+    Mutations are assumed to be separated by underscores
+    (e.g. ``"D23M_A107L_F190R"`` → 3).  A single-mutation variant
+    with no underscore (e.g. ``"F190R"``) returns 1.
 
     Args:
-    round_base_path (str): Base path to the data directory containing the excel files.
-    round_file_names_single (list): List of single mutant round file names.
-    wt_fasta_path (str): Path to the wild-type FASTA file.
-    round_file_names_multi (list): List of multi mutant round file names.
+        variant: Variant name string.
 
     Returns:
-    pd.DataFrame: Processed and concatenated experimental data
+        Integer count of mutations.
     """
+    return len(variant.split("_"))
 
-    # Load experimental data
-    all_experimental_data = []
-    for round_file_name in round_file_names_single:
-        experimental_data = load_experimental_data(round_base_path, round_file_name, wt_fasta_path, single_mutant=True)
-        all_experimental_data.append(experimental_data)
 
-    if round_file_names_multi is not None:
-        for round_file_name in round_file_names_multi:
-            experimental_data = load_experimental_data(round_base_path, round_file_name, wt_fasta_path, single_mutant=False)
-            all_experimental_data.append(experimental_data)
-    
-    processed_dfs = []
-    # Process each round's data
-    for round_num, df in enumerate(all_experimental_data, start=1):
-        df_copy = df.copy()
-        
-        # Set iteration for WT in first round, exclude WT from subsequent rounds
-        if round_num == 1:
-            df_copy.loc[df_copy['updated_variant'] == 'WT', 'iteration'] = 0
-        else:
-            df_copy = df_copy[df_copy['updated_variant'] != 'WT']
-        
-        df_copy.loc[df_copy['updated_variant'] != 'WT', 'iteration'] = round_num
-        df_copy['iteration'] = df_copy['iteration'].astype(float)
-        df_copy.rename(columns={'updated_variant': 'variant'}, inplace=True)
-        
-        processed_dfs.append(df_copy)
+def plot_y_pred_distribution(
+    df: pd.DataFrame,
+    *,
+    bin_width: float = 0.05,
+    by_n_mutations: bool = False,
+    highlight_wt: bool = False,
+    wt_label: str = "WT",
+    wt_color: str = "gold",
+    wt_alpha: float = 0.35,
+    variant_col: str = "variant",
+    y_pred_col: str = "y_pred",
+    palette: str = "tab10",
+    stat: str = "count",
+    ax: plt.Axes | None = None,
+    figsize: tuple[float, float] = (8, 5),
+) -> plt.Figure:
+    """Plot the distribution of predicted fitness scores (``y_pred``).
 
-    # Combine all processed dataframes
-    combined_df = pd.concat(processed_dfs, ignore_index=True)
+    Parameters
+    ----------
+    df:
+        DataFrame containing at least a ``y_pred`` column and, when
+        ``by_n_mutations=True``, a ``variant`` column from which mutation
+        counts are derived.
+    bin_width:
+        Width of each histogram bin along the ``y_pred`` axis.  Smaller
+        values produce finer-grained bins.  Defaults to ``0.05``.
+    by_n_mutations:
+        When ``True``, overlay a separate histogram for each distinct
+        mutation count found in the data, coloured by the ``palette``.
+        When ``False`` (default), a single histogram is drawn for the
+        whole dataset.
+    highlight_wt:
+        When ``True``, shade the bin that the wild-type (WT) variant
+        falls in and draw a vertical dashed line at its exact ``y_pred``
+        value.  The WT row is identified by matching ``variant_col``
+        against ``wt_label``.  A warning is printed (and the flag is
+        silently ignored) if no matching row is found.
+    wt_label:
+        The variant name used to locate the WT row.  Defaults to
+        ``"WT"``.
+    wt_color:
+        Colour of the WT bin highlight and dashed line.  Any Matplotlib
+        colour string is accepted.  Defaults to ``"gold"``.
+    variant_col:
+        Name of the column that holds variant identifiers used to count
+        mutations and locate the WT row.
+    y_pred_col:
+        Name of the column containing predicted fitness values.
+        Defaults to ``"y_pred"``.
+    palette:
+        Any Seaborn / Matplotlib named colour palette used when
+        ``by_n_mutations=True``.  Defaults to ``"tab10"``.
+    stat:
+        Aggregate statistic for the y-axis — any value accepted by
+        :func:`seaborn.histplot` (``"count"``, ``"frequency"``,
+        ``"density"``, ``"probability"``).  Defaults to ``"count"``.
+    ax:
+        Optional existing :class:`matplotlib.axes.Axes` to draw on.
+        When ``None`` a new figure is created.
+    figsize:
+        ``(width, height)`` in inches for the newly created figure.
+        Ignored when *ax* is provided.
 
-    return combined_df
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the plot.
 
-def process_dataframe(df, group_columns, aggregate_columns):
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from plot import plot_y_pred_distribution
+    >>> df = pd.read_csv("df_sorted_all.csv")
+
+    # Single histogram, default 0.05-wide bins
+    >>> fig = plot_y_pred_distribution(df)
+
+    # Overlaid by mutation count, coarser bins
+    >>> fig = plot_y_pred_distribution(df, bin_width=0.1, by_n_mutations=True)
     """
-    Process a dataframe by grouping and aggregating columns.
+    if y_pred_col not in df.columns:
+        raise ValueError(
+            f"Column '{y_pred_col}' not found in DataFrame. "
+            f"Available columns: {df.columns.tolist()}"
+        )
 
-    Args:
-    df (pd.DataFrame): Input dataframe
-    group_columns (list): Columns to group by
-    aggregate_columns (list): Columns to aggregate
+    if by_n_mutations and variant_col not in df.columns:
+        raise ValueError(
+            f"Column '{variant_col}' not found in DataFrame, which is required "
+            f"when by_n_mutations=True. Available columns: {df.columns.tolist()}"
+        )
 
-    Returns:
-    pd.DataFrame: Processed dataframe
-    """
-    
-    df.replace("None", np.nan, inplace=True)
-    df = df.dropna(subset=aggregate_columns, how='all')
-    df[aggregate_columns] = df[aggregate_columns].apply(pd.to_numeric, errors='coerce')
-    
-    grouped = df.groupby(group_columns)
-    stats = grouped[aggregate_columns].agg(['mean', 'std'])
-    stats.columns = [f'{col}_{stat}' for col, stat in stats.columns]
-    return stats.reset_index()
+    plot_df = df.copy()
 
-def filter_dataframe(df, conditions, output_dir=None, output_file=None):
-    """
-    Filter a dataframe based on conditions.
-
-    Args:
-    df (pd.DataFrame): Input dataframe
-    conditions (dict): Dictionary of column-value pairs to filter on
-    output_dir (str, optional): Output directory for the CSV file
-    output_file (str, optional): Output file name    
-
-    Returns:
-    pd.DataFrame: Filtered dataframe
-    """
-    for column, value in conditions.items():
-        if isinstance(value, list):
-            filtered_df = df[df[column].isin(value)]
-        else:
-            filtered_df = df[df[column] == value]
-
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        filtered_df.to_csv(os.path.join(output_dir, output_file), index=False)
-        
-    return filtered_df
-
-def save_dataframe(df, output_dir=None, output_file=None):
-    """
-    Save a dataframe.
-
-    Args:
-    df (pd.DataFrame): Input dataframe
-    output_dir (str, optional): Output directory for the CSV file
-    output_file (str, optional): Output file name
-
-    """
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        df.to_csv(os.path.join(output_dir, output_file), index=False)
-        
-def apply_labels(df, column, prefix='', suffix='', value_column=None, format_string='{}'):
-    """
-    Apply labels to a DataFrame column.
-    
-    Args:
-    df (pd.DataFrame): Input dataframe
-    column (str): Column name to be created
-    prefix (str, optional): Prefix for the label
-    suffix (str, optional): Suffix for the label
-    value_column (str, optional): Column to use for the label value
-    format_string (str): Format string for the label value
-
-    Returns:
-    pd.DataFrame: DataFrame with the new column
-    """   
-    if value_column is None:
-        df[column] = prefix + df.index.map(lambda x: format_string.format(x)) + suffix
+    if by_n_mutations:
+        plot_df["n_mutations"] = plot_df[variant_col].apply(_count_mutations)
+        # Sort so legend is ordered 1, 2, 3, …
+        sorted_counts = sorted(plot_df["n_mutations"].unique())
+        plot_df["n_mutations"] = pd.Categorical(
+            plot_df["n_mutations"], categories=sorted_counts, ordered=True
+        )
+        hue_col: str | None = "n_mutations"
+        hue_label = "# mutations"
     else:
-        df[column] = prefix + df[value_column].map(lambda x: format_string.format(x)) + suffix
-    return df
+        hue_col = None
+        hue_label = None
 
-def load_external_data(file_path, label=None, rename_columns=None):
-    """
-    Load external data from a CSV file, optionally add a label column, and rename columns if specified.
-    
-    Args:
-    file_path (str): Path to the CSV file
-    label (str, optional): Label to be added as a new column
-    rename_columns (dict, optional): Dictionary of column names to rename, e.g., {'old_name': 'new_name'}
-    
-    Returns:
-    pd.DataFrame: Loaded and processed dataframe
-    """
-    df = pd.read_csv(file_path)
-    
-    if label:
-        df['label'] = label
+    y_min = plot_df[y_pred_col].min()
+    y_max = plot_df[y_pred_col].max()
+    bins = list(
+        _frange(y_min - bin_width, y_max + 2 * bin_width, bin_width)
+    )
 
-    if rename_columns:
-        df = df.rename(columns=rename_columns)
-    
-    return df
-
-def concatenate_dataframes(dataframes, output_dir = None, output_file = None):
-    """
-    Concatenate a list of dataframes and optionally save the result to a CSV file.
-    
-    Args:
-    dataframes (list): List of dataframes to concatenate
-    output_dir (str, optional): Output directory for the CSV file
-    output_file (str, optional): Output file name
-    
-    Returns:
-    pd.DataFrame: Concatenated dataframe
-    """
-    concatenated_df = pd.concat(dataframes, ignore_index=True)
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        concatenated_df.to_csv(os.path.join(output_dir, output_file), index=False)
-    
-    return concatenated_df
-
-def plot_comparison(concatenated_df, palette=None, variable='activity_binary_percentage_mean', title=None, output_dir=None, output_file=None):
-    """
-    Generate plots from a concatenated dataframe.
-    
-    Args:
-    concatenated_df (pd.DataFrame): Dataframe containing the data to plot
-    palette (dict, optional): Custom color palette for the plots
-    variable (str): Name of the variable to plot on y-axis
-    output_dir (str, optional): Directory to save the plots
-    output_file (str, optional): Base name for the output files
-    
-    Returns:
-    None
-    """
-    if palette is None:
-        palette_colors = sns.color_palette("tab10")
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
     else:
-        palette_colors = palette
-    
-    # Plot 1: Bar plot by dataset
-    plt.figure(figsize=(10, 6))
-    ax = sns.barplot(data=concatenated_df, x='dataset', y=variable, 
-                     hue='label', palette=palette_colors, alpha=0.75)
-    plt.xlabel('Dataset')
-    plt.ylabel(f'{variable.replace("_", " ").title()}')
-    plt.title(title)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.legend(title='Label', bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_by_dataset.png"), dpi=300, bbox_inches='tight')
-    
-    plt.show()
-    
-    # Plot 2: Bar plot by label with swarm plot
-    plt.figure(figsize=(7, 6))
-    ax = sns.barplot(data=concatenated_df, x='label', y=variable,
-                     palette=palette_colors, alpha=0.75)
-    sns.swarmplot(data=concatenated_df, x='label', y=variable, 
-                  size=4, color="black")
-    plt.xlabel('Model')
-    plt.ylabel(f'{variable.replace("_", " ").title()}')
-    plt.title(title)
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    
-    if output_dir and output_file:
-        plt.savefig(os.path.join(output_dir, f"{output_file}_by_model.png"), dpi=300, bbox_inches='tight')
-    
-    plt.show()
+        fig = ax.get_figure()
 
-def plot_grid_search_bar(df, variable='activity_binary_percentage_mean', strategy_column=None, title=None, output_dir=None, output_file=None):
+    sns.histplot(
+        data=plot_df,
+        x=y_pred_col,
+        hue=hue_col,
+        bins=bins,
+        stat=stat,
+        palette=palette if hue_col else None,
+        element="bars",
+        multiple="layer",
+        alpha=0.55 if hue_col else 0.75,
+        edgecolor="white",
+        linewidth=0.4,
+        ax=ax,
+    )
+
+    # ------------------------------------------------------------------
+    # WT bin highlight
+    # ------------------------------------------------------------------
+    if highlight_wt:
+        wt_rows = plot_df[plot_df[variant_col] == wt_label]
+        if wt_rows.empty:
+            import warnings
+            warnings.warn(
+                f"highlight_wt=True but no row with {variant_col}=='{wt_label}' "
+                f"was found. Skipping WT highlight.",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            wt_y_pred = wt_rows[y_pred_col].iloc[0]
+
+            # Vertical dashed line at the exact WT value
+            ax.axvline(
+                wt_y_pred,
+                color=wt_color,
+                linewidth=1.5,
+                linestyle="--",
+                zorder=3,
+            )
+
+            # Grab handles/labels from the seaborn-generated legend (hue),
+            # then append the WT line so both appear in one legend.
+            existing_legend = ax.get_legend()
+            if existing_legend is not None:
+                existing_handles = existing_legend.legend_handles
+                existing_labels = [t.get_text() for t in existing_legend.get_texts()]
+            else:
+                existing_handles, existing_labels = [], []
+            wt_handle = plt.Line2D([0], [0], color=wt_color, linewidth=1.5, linestyle="--")
+            ax.legend(
+                handles=existing_handles + [wt_handle],
+                labels=existing_labels + [f"{wt_label} y_pred = {wt_y_pred:.3f}"],
+                title=hue_label if hue_col else None,
+                loc="best",
+                framealpha=0.8,
+            )
+
+    ax.set_xlabel("Predicted fitness (y_pred)", fontsize=12)
+    ax.set_ylabel(stat.capitalize(), fontsize=12)
+    ax.set_title("Distribution of predicted fitness scores", fontsize=13)
+
+    if hue_col and not highlight_wt:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.set_title(hue_label)
+
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    return fig
+
+
+def plot_additive_vs_actual(
+    df: pd.DataFrame,
+    *,
+    variant_col: str = "variant",
+    y_pred_col: str = "y_pred",
+    by_n_mutations: bool = False,
+    color: str = "steelblue",
+    palette: str = "tab10",
+    alpha: float = 0.6,
+    point_size: float = 30,
+    show_diagonal: bool = True,
+    diagonal_color: str = "crimson",
+    diagonal_linestyle: str = "--",
+    ax: plt.Axes | None = None,
+    figsize: tuple[float, float] = (7, 6),
+) -> plt.Figure:
+    """Scatter plot of additive predicted fitness vs. actual predicted fitness
+    for all multi-mutant variants.
+
+    For each multi-mutant variant the **additive score** is calculated as the
+    sum of the ``y_pred`` values of each constituent single mutation.  Only
+    variants whose individual component mutations all appear as single-mutant
+    rows in *df* are included; multi-mutants with a missing component are
+    silently skipped.
+
+    Parameters
+    ----------
+    df:
+        DataFrame containing at least a ``variant`` column and a ``y_pred``
+        column.  Single-mutant rows are identified by the absence of an
+        underscore in the variant name.
+    variant_col:
+        Name of the column holding variant identifiers.  Defaults to
+        ``"variant"``.
+    y_pred_col:
+        Name of the column containing predicted fitness values.  Defaults to
+        ``"y_pred"``.
+    by_n_mutations:
+        When ``True``, points are coloured by the number of mutations in the
+        variant using the ``palette``.  A legend entry is added for each
+        distinct mutation count.  When ``False`` (default), all points share
+        the single ``color``.
+    color:
+        Colour used for all scatter points when ``by_n_mutations=False``.
+        Defaults to ``"steelblue"``.
+    palette:
+        Any Seaborn / Matplotlib named colour palette used to assign colours
+        per mutation count when ``by_n_mutations=True``.  Defaults to
+        ``"tab10"``.
+    alpha:
+        Opacity of the scatter points.  Defaults to ``0.6``.
+    point_size:
+        Marker size passed to :func:`matplotlib.axes.Axes.scatter`.  Defaults
+        to ``30``.
+    show_diagonal:
+        When ``True`` (default), draw a diagonal ``y = x`` reference line so
+        that epistatic deviations from additivity are immediately visible.
+    diagonal_color:
+        Colour of the ``y = x`` reference line.  Defaults to ``"crimson"``.
+    diagonal_linestyle:
+        Line style of the ``y = x`` reference line.  Defaults to ``"--"``.
+    ax:
+        Optional existing :class:`matplotlib.axes.Axes` to draw on.  When
+        ``None`` a new figure is created.
+    figsize:
+        ``(width, height)`` in inches for the newly created figure.  Ignored
+        when *ax* is provided.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the scatter plot.
+
+    Raises
+    ------
+    ValueError
+        If ``variant_col`` or ``y_pred_col`` are not present in *df*.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from plot import plot_additive_vs_actual
+    >>> df = pd.read_csv("df_sorted_all.csv")
+
+    # Single colour
+    >>> fig = plot_additive_vs_actual(df)
+
+    # Colour points by number of mutations
+    >>> fig = plot_additive_vs_actual(df, by_n_mutations=True)
+    >>> fig.savefig("additive_vs_actual.png", dpi=150)
     """
-    Generate plots from a dataframe to compare different strategies.
-    
-    Args:
-    df (pd.DataFrame): Dataframe containing the data to plot
-    variable (str): Name of the variable to plot on y-axis
-    strategy_column (str): Name of the column containing different strategies
-    title (str, optional): Title for the plot
-    output_dir (str, optional): Directory to save the plots
-    output_file (str, optional): Base name for the output files
-    
-    Returns:
-    None
-    """
-    if strategy_column is None:
-        raise ValueError("strategy_columns must be a list of exactly two column names")
+    if variant_col not in df.columns:
+        raise ValueError(
+            f"Column '{variant_col}' not found in DataFrame. "
+            f"Available columns: {df.columns.tolist()}"
+        )
+    if y_pred_col not in df.columns:
+        raise ValueError(
+            f"Column '{y_pred_col}' not found in DataFrame. "
+            f"Available columns: {df.columns.tolist()}"
+        )
 
-    round_num = df['round_num'].iloc[0]
-    grouped = df.groupby(['dataset', strategy_column])[variable].mean().unstack()
+    # Build a lookup table of single-mutant y_pred values.
+    single_mask = df[variant_col].apply(lambda v: "_" not in str(v))
+    single_lookup: dict[str, float] = (
+        df.loc[single_mask].set_index(variant_col)[y_pred_col].to_dict()
+    )
 
-    # Plot
-    plt.figure(figsize=(10, 6))
-    ax = sns.barplot(data=df, x='dataset', y=variable, hue=strategy_column, alpha=0.75)
-    
-    if title is None:
-        title = f'{variable.replace("_", " ").title()} by {strategy_column.replace("_", " ").title()} ({round_num} rounds)'
-    
-    ax.set_title(title)
-    ax.set_xlabel('Dataset')
-    ax.set_ylabel(variable.replace("_", " ").title())
-    ax.legend(title=strategy_column.replace("_", " ").title(), bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_grid_bar.png"), dpi=300, bbox_inches='tight')
-    
-    plt.show()
+    additive_scores: list[float] = []
+    actual_scores: list[float] = []
+    n_mutations_list: list[int] = []
 
-    # Count the occurrences of each strategy being the best for each dataset
-    winning_counts = grouped.apply(lambda x: x.idxmax(), axis=1).value_counts()
+    for _, row in df[~single_mask].iterrows():
+        components = str(row[variant_col]).split("_")
+        # Skip if any component single mutant is absent from the dataset.
+        if not all(c in single_lookup for c in components):
+            continue
+        additive_scores.append(sum(single_lookup[c] for c in components))
+        actual_scores.append(row[y_pred_col])
+        n_mutations_list.append(len(components))
 
-    # Print counts of winning strategies
-    print("\nCounts of Winning Strategies:")
-    print(winning_counts)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
 
-def plot_grid_search_heatmap(df, variable='activity_binary_percentage_mean', strategy_columns=None, title=None, output_dir=None, output_file=None):
-    """
-    Generate a heatmap from a dataframe to compare the intersection of two strategies.
-    
-    Args:
-    df (pd.DataFrame): Dataframe containing the data to plot
-    variable (str): Name of the variable to average and plot
-    strategy_columns (list): List of two columns containing different strategies
-    title (str, optional): Title for the plot
-    output_dir (str, optional): Directory to save the plot
-    output_file (str, optional): Base name for the output file
-    
-    Returns:
-    None
-    """
-    if strategy_columns is None or len(strategy_columns) != 2:
-        raise ValueError("strategy_columns must be a list of exactly two column names")
+    legend_handles: list = []
 
-    # Extract round number
-    round_num = df['round_num'].iloc[0]
+    if by_n_mutations:
+        sorted_counts = sorted(set(n_mutations_list))
+        colors = sns.color_palette(palette, n_colors=len(sorted_counts))
+        color_map = dict(zip(sorted_counts, colors))
 
-    # Group by the two strategy columns and calculate the mean of the variable
-    grouped = df.groupby(strategy_columns)[variable].mean().unstack()
+        for n in sorted_counts:
+            idx = [i for i, v in enumerate(n_mutations_list) if v == n]
+            x_vals = [additive_scores[i] for i in idx]
+            y_vals = [actual_scores[i] for i in idx]
+            handle = ax.scatter(
+                x_vals,
+                y_vals,
+                c=[color_map[n]],
+                alpha=alpha,
+                s=point_size,
+                linewidths=0,
+                label=f"{n} mutations",
+                zorder=3,
+            )
+            legend_handles.append(handle)
+    else:
+        ax.scatter(
+            additive_scores,
+            actual_scores,
+            c=color,
+            alpha=alpha,
+            s=point_size,
+            linewidths=0,
+            zorder=3,
+        )
 
-    # Plot
-    plt.figure(figsize=(12, 8))
-    ax = sns.heatmap(grouped, cmap='viridis', annot=True, fmt=".2f", linewidths=0.5)
-    
-    if title is None:
-        title = f'Average {variable.replace("_", " ").title()} by {strategy_columns[0].replace("_", " ").title()} and {strategy_columns[1].replace("_", " ").title()} ({round_num} rounds)'
-    
-    ax.set_title(title)
-    ax.set_xlabel(strategy_columns[1].replace("_", " ").title())
-    ax.set_ylabel(strategy_columns[0].replace("_", " ").title())
-    plt.tight_layout()
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_grid_heatmap.png"), dpi=300, bbox_inches='tight')
-    
-    plt.show()
+    if show_diagonal:
+        all_vals = additive_scores + actual_scores
+        lo, hi = min(all_vals), max(all_vals)
+        diag_line, = ax.plot(
+            [lo, hi],
+            [lo, hi],
+            color=diagonal_color,
+            linestyle=diagonal_linestyle,
+            linewidth=1.2,
+            label="y = x (additive)",
+            zorder=2,
+        )
+        legend_handles.append(diag_line)
 
-def plot_by_round(df, variable='activity_binary_percentage_mean', output_dir=None, output_file=None):
-    """
-    Plot round-by-round comparison for each dataset.
-    
-    Args:
-    df (pd.DataFrame): Dataframe containing the data to plot
-    variable (str): Name of the variable to plot on y-axis
-    output_dir (str, optional): Directory to save the plot
-    output_file (str, optional): Base name for the output file
-    
-    Returns:
-    None
-    """
-    plt.figure(figsize=(10, 6))
-    ax = plt.gca()
+    if legend_handles:
+        ax.legend(
+            handles=legend_handles,
+            title="# mutations" if by_n_mutations else None,
+            framealpha=0.8,
+            loc="best",
+        )
 
-    # Generate a color palette for the unique datasets
-    datasets = df['dataset'].unique()
-    color_palette = sns.color_palette("tab10", n_colors=len(datasets))
-    color_map = dict(zip(datasets, color_palette))
+    ax.set_xlabel("Additive score (sum of single-mutant y_pred)", fontsize=12)
+    ax.set_ylabel("Predicted fitness (y_pred)", fontsize=12)
+    ax.set_title("Additive vs. predicted fitness for multi-mutant variants", fontsize=13)
 
-    for dataset in datasets:
-        dataset_df = df[df['dataset'] == dataset]
-        x_values = dataset_df['round_num']
-        y_values = dataset_df[variable]
-        color = color_map[dataset]
-        ax = sns.lineplot(x=x_values, y=y_values, ax=ax, marker='o', color=color, label=dataset)
- 
-    ax.set_xlabel('Number of Iterations')
-    ax.set_ylabel(variable.replace('_', ' ').title())
-    ax.set_title(f'{variable.replace("_", " ").title()} by Iterations')
-    
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_by_round.png"), dpi=300, bbox_inches='tight')
-    
-    plt.show()
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    return fig
 
-def plot_by_round_split(df, variable='activity_binary_percentage_mean', split_variable='num_mutants_per_round', output_dir=None, output_file=None):
-    """
-    Plot round-by-round comparison with separate subplots for each dataset, with lines split by a specified variable.
-    Includes a shared legend for all subplots.
-    
-    Args:
-    df (pd.DataFrame): Dataframe containing the data to plot
-    variable (str): Name of the variable to plot on y-axis
-    split_variable (str): Name of the variable to split lines by within each subplot
-    output_dir (str, optional): Directory to save the plot
-    output_file (str, optional): Base name for the output file
-    
-    Returns:
-    None
-    """
-    datasets = df['dataset'].unique()
-    n_datasets = len(datasets)
-    
-    # Create color palette for split variable
-    split_values = sorted(df[split_variable].unique())
-    color_palette = sns.color_palette("tab10", n_colors=len(split_values))
-    color_map = dict(zip(split_values, color_palette))
-    
-    # Calculate number of rows and columns for subplots
-    n_cols = 3  # You can adjust this
-    n_rows = (n_datasets + n_cols - 1) // n_cols
-    
-    # Create figure and subplots
-    fig = plt.figure(figsize=(20, 4*n_rows))
-    gs = fig.add_gridspec(n_rows, n_cols)
-    
-    # Create plots
-    for idx, dataset in enumerate(datasets):
-        row = idx // n_cols
-        col = idx % n_cols
-        ax = fig.add_subplot(gs[row, col])
-        
-        dataset_df = df[df['dataset'] == dataset]
-        
-        for split_value in split_values:
-            subset_df = dataset_df[dataset_df[split_variable] == split_value]
-            
-            sns.lineplot(data=subset_df, x='round_num', y=variable, 
-                        marker='o', ax=ax, color=color_map[split_value],
-                        label=f'{split_variable}: {split_value}')
-        
-        ax.set_xlabel('Number of Iterations')
-        ax.set_ylabel(variable.replace('_', ' ').title())
-        ax.set_title(dataset)
-        ax.legend().remove()  # Remove individual legends
-        
-    # Remove empty subplots if any
-    for idx in range(len(datasets), n_rows * n_cols):
-        row = idx // n_cols
-        col = idx % n_cols
-        fig.delaxes(plt.subplot(gs[row, col]))
-    
-    # Create shared legend
-    lines = []
-    labels = []
-    for split_value in split_values:
-        lines.append(plt.Line2D([0], [0], color=color_map[split_value], marker='o', linestyle='-'))
-        labels.append(f'{split_variable}: {split_value}')
-    
-    fig.legend(lines, labels, loc='center left', bbox_to_anchor=(1.0, 0.5))
-    
-    # Add overall title
-    fig.suptitle(f'{variable.replace("_", " ").title()} by Iterations', y=1.02)
-    
-    # Adjust layout to make room for the legend
-    plt.tight_layout(rect=[0, 0, 0.98, 1]) 
-    
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_by_round_split_{split_variable}.png"), 
-                    dpi=300, bbox_inches='tight')
-    
-    plt.show()
 
-def plot_variants_by_iteration(df, activity_column='activity', output_dir=None, output_file=None):
-    """
-    Simple bar plot of variants grouped by iteration.
-    
-    Args:
-    df: DataFrame with 'variant', 'iteration', and activity column
-    activity_column: Column name containing activity values
-    output_dir: Directory to save the plot
-    output_file: Filename for the saved plot
-    """
-    # sort the dataframe by iteration and the activity column within each iteration
-    df['iteration'] = df['iteration'].astype(int)
-    df = df.sort_values(['iteration', activity_column], ascending=[True, True])
-    df = df.reset_index(drop=True)
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
-    plt.figure(figsize=(12, 6))
-    
-    # Plot each variant in the order of the dataframe, colored by iteration
-    for iteration, group in df.groupby('iteration'):
-        plt.bar(group.index, group[activity_column], label=f"Round {iteration}")
-
-    # Customize
-    plt.xticks(df.index, df['variant'], rotation=90)
-    plt.ylabel(activity_column.capitalize())
-    plt.legend()
-    
-    plt.tight_layout()
-
-    if output_dir and output_file:
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, f"{output_file}_by_iteration.png"), dpi=300, bbox_inches='tight')
-
-    plt.show()
+def _frange(start: float, stop: float, step: float):
+    """Yield evenly spaced floats from *start* up to (not including) *stop*."""
+    x = start
+    while x < stop:
+        yield round(x, 10)
+        x += step
