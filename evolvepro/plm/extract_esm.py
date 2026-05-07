@@ -10,23 +10,14 @@ import argparse
 import pathlib
 import pandas as pd
 import torch
+import re
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 
 
-def get_device(nogpu=False):
-    if nogpu:
-        return torch.device("cpu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
 def create_parser():
     parser = argparse.ArgumentParser(
-        description="Extract per-token representations and model outputs for sequences in a FASTA file"  # noqa
+        description="Extract per-token representations and model outputs for sequences in a FASTA file"
     )
 
     parser.add_argument(
@@ -72,14 +63,41 @@ def create_parser():
 
     parser.add_argument("--nogpu", action="store_true", help="Do not use GPU even if available")
 
-    parser.add_argument(
-        "--concatenate_dir",
-        type=pathlib.Path,
-        default=None,
-        help="output directory for concatenated representations",
-    )
-
     return parser
+
+
+def get_device(nogpu=False):
+    if nogpu:
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def make_directory(path: pathlib.Path, print_error=True) -> pathlib.Path:
+    try:
+        path.mkdir(parents=True, exist_ok=False)
+        print(f"Created directory {path}.")
+        return path
+    except FileExistsError:
+        if print_error:
+            print(f"Output directory {path} already exists.")
+        dir_string = str(path)
+        match = re.search(pattern=r'^(.*?)_(\d+)$', string=dir_string)
+        if match:
+            prefix, number = match.group(1), int(match.group(2))
+            suffix = number + 1
+            dir_string = f"{prefix}_{suffix}"
+        else:
+            suffix = 1
+            dir_string = f"{path}_{suffix}"
+
+        path = pathlib.Path(dir_string)
+        # recursive until you find a path that doesn't already exist'
+        return make_directory(path, print_error=False)
+
 
 def run(args):
     model, alphabet = pretrained.load_model_and_alphabet(args.model_location)
@@ -88,25 +106,19 @@ def run(args):
         raise ValueError(
             "This script currently does not handle models with MSA input (MSA Transformer)."
         )
-    # does not work with my mac
-    # if torch.cuda.is_available() and not args.nogpu:
-    #     model = model.cuda()
-    #     print("Transferred model to GPU")
 
-    # written by claude to get past the lack of CUDA availability on my mac
     device = get_device(args.nogpu)
-    model = model.to(device)
+    model = model.to(device, dtype=torch.float32)  # testing whether bfloat16 increases performance on my mac
     print(f"Using device: {device}")
 
     dataset = FastaBatchedDataset.from_file(args.fasta_file)
     batches = dataset.get_batch_indices(args.toks_per_batch, extra_toks_per_seq=1)
-    data_loader = torch.utils.data.DataLoader(
-        dataset, collate_fn=alphabet.get_batch_converter(), batch_sampler=batches
-    )
+    data_loader = torch.utils.data.DataLoader(dataset, collate_fn=alphabet.get_batch_converter(), batch_sampler=batches)
     print(f"Read {args.fasta_file} with {len(dataset)} sequences")
 
+    args.output_dir = make_directory(args.output_dir)
+    print(f"Output directory: {args.output_dir}")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     return_contacts = "contacts" in args.include
 
     assert all(-(model.num_layers + 1) <= i <= model.num_layers for i in args.repr_layers)
@@ -114,29 +126,24 @@ def run(args):
 
     with torch.no_grad():
         for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-            print(
-                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
-            )
-            # my mac is incompatible with CUDA
-            # if torch.cuda.is_available() and not args.nogpu:
-            #     toks = toks.to(device="cuda", non_blocking=True)
-            #new code to transfer to GPU
-            toks = toks.to(device=device)
+            print(f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)")
 
-            
+            toks = toks.to(device=device)
             print(f"Device: {toks.device}")
 
             out = model(toks, repr_layers=repr_layers, return_contacts=return_contacts)
 
-            logits = out["logits"].to(device="cpu")
-            representations = {
-                layer: t.to(device="cpu") for layer, t in out["representations"].items()
-            }
+            # unused call to logits?
+            # logits = out["logits"].to(device="cpu", dtype=torch.float32)
+            # print(f"Device: {logits.device}, dtype: {logits.dtype}, shape: {logits.shape}")
+
+            representations = {layer: t.to(device="cpu", dtype=torch.float32) for layer, t in out["representations"].items()}
+
             if return_contacts:
-                contacts = out["contacts"].to(device="cpu")
+                contacts = out["contacts"].to(device="cpu", dtype=torch.float32)
 
             for i, label in enumerate(labels):
-                args.output_file = args.output_dir / f"{label}.pt"
+                args.output_file = args.output_dir / "pt" / f"{label}.pt"
                 args.output_file.parent.mkdir(parents=True, exist_ok=True)
                 result = {"label": label}
                 truncate_len = min(args.truncation_seq_length, len(strs[i]))
@@ -159,10 +166,7 @@ def run(args):
                 if return_contacts:
                     result["contacts"] = contacts[i, : truncate_len, : truncate_len].clone()
 
-                torch.save(
-                    result,
-                    args.output_file,
-                )
+                torch.save(result, args.output_file)
 
     print(f"Saved representations to {args.output_dir}")
 
@@ -170,7 +174,7 @@ def concatenate_files(output_dir, output_csv):
 
     # Get all .pt files in the output directory
     files = []
-    for r, d, f in os.walk(output_dir):
+    for r, d, f in os.walk(output_dir / "pt"):
         for file in f:
             if '.pt' in file:
                 files.append(os.path.join(r, file))
@@ -178,7 +182,7 @@ def concatenate_files(output_dir, output_csv):
     # Load each file and append to a list of dataframes
     dataframes = []
     for file_path in files:
-        file_data = torch.load(file_path)
+        file_data = torch.load(file_path, weights_only=True)
         label = file_data['label']
         representations = file_data['mean_representations']
         key, tensor = representations.popitem()
@@ -191,7 +195,7 @@ def concatenate_files(output_dir, output_csv):
     if dataframes:
         concatenated_df = pd.concat(dataframes)
         print("Shape of concatenated DataFrame:", concatenated_df.shape)
-        concatenated_df.to_csv(output_csv)
+        concatenated_df.to_csv(output_dir / output_csv, index=True)
         print(f"Saved concatenated representations to {output_csv}")
     else:
         print("No data to concatenate.")
@@ -202,14 +206,11 @@ def main():
     
     run(args)
 
-    if args.concatenate_dir is not None:
-        fasta_file_name = args.fasta_file.stem
-        output_csv = f"{args.concatenate_dir}/{fasta_file_name}_{args.model_location}.csv"
-        concatenate_files(args.output_dir, output_csv)
-        # print(f"Removing {args.output_dir}")
-        # shutil.rmtree(args.output_dir)
-    else:
-        print("Skipping concatenation, file move, and cleanup as --concatenate_dir flag was not set.")
+    fasta_file_name = args.fasta_file.stem
+    output_csv = f"{fasta_file_name}_{args.model_location}.csv"
+    concatenate_files(args.output_dir, output_csv)
+
+
 
 if __name__ == "__main__":
     main()

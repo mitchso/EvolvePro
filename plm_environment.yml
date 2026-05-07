@@ -6,7 +6,7 @@ channels:
 dependencies:
   - python=3.10
   - numpy>=1.22,<=1.24.3
-  - pytorch
+  - pytorch=2.5 # updated this to 2.5 so that i can use my GPU with torch.amp.autocast
 #  - cudatoolkit <- this is not compatible with mac GPUs (nvidia only)
   - pathlib
   - biopython

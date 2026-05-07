@@ -11,6 +11,7 @@ evolve.py — Top-level orchestration for EvolvePro.
 
 from evolvepro.src.data import *
 from evolvepro.src.model import top_layer
+import sys
 
 def evolve_experimental(
     round_name: str,
@@ -48,14 +49,19 @@ def evolve_experimental(
 
     if output_dir is not None:
         save_dir = os.path.join(output_dir, round_name)
-        os.makedirs(save_dir, exist_ok=True)
-        iteration.to_csv(os.path.join(save_dir, 'iteration.csv'))
-        this_round_variants.to_csv(os.path.join(save_dir, 'this_round_variants.csv'))
-        df_test.sort_values('y_pred', ascending=False).to_csv(
-            os.path.join(save_dir, 'df_test.csv')
-        )
-        df_sorted_all.to_csv(os.path.join(save_dir, 'df_sorted_all.csv'))
-        print(f'Results saved to {save_dir}')
+        try:
+            os.makedirs(save_dir, exist_ok=False)
+            iteration.to_csv(os.path.join(save_dir, 'iteration.csv'))
+            this_round_variants.to_csv(os.path.join(save_dir, 'this_round_variants.csv'))
+            df_test.sort_values('y_pred', ascending=False).to_csv(
+                os.path.join(save_dir, 'df_test.csv')
+            )
+            df_sorted_all.to_csv(os.path.join(save_dir, 'df_sorted_all.csv'))
+            print(f'Results saved to {save_dir}')
+
+        except FileExistsError:
+            print(f"Output directory {save_dir} already exists. No files written.")
+
 
 
 def evolve_experimental_multi(
