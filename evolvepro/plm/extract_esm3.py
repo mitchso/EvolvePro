@@ -9,8 +9,6 @@ from Bio import SeqIO
 from esm.models.esmc import ESMC
 from esm.models.esm3 import ESM3
 from esm.sdk.api import ESMProtein, LogitsConfig, SamplingConfig
-import huggingface_hub
-from huggingface_hub.errors import GatedRepoError
 
 
 def get_device(nogpu=False):
