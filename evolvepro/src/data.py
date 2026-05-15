@@ -38,130 +38,17 @@ def _is_valid_variant(value: str) -> bool:
 
 
 def validate_csv(file_path: str, file_type: str) -> pd.DataFrame:
-    """Load and validate a CSV file used by EvolvePro.
+    """Load and validate a CSV file used by EvolvePro."""
 
-    Two ``file_type`` values are accepted:
+    if file_type == 'embeddings':
+        df = pd.read_csv(file_path, index_col=0)    # turns the variant name into the index
+    elif file_type == 'experimental':
+        df = pd.read_excel(file_path, index_col=0)   # turns the variant name into the index
+    else:
+        raise ValueError(f"Invalid file type: {file_type}")
 
-    ``"experimental"``
-        The CSV must have exactly one column named ``"variant"`` (case-insensitive)
-        and one column named ``"activity"`` (case-insensitive).  The ``variant``
-        column must contain only ``"WT"`` or standard mutation notation
-        (``<WT residue><position><mut residue>``, optionally chained with ``_``).
-        The ``activity`` column must be fully numeric.  Additional columns are
-        allowed without restriction.
-
-    ``"embeddings"``
-        The first column is treated as the variant index.  It must contain only
-        valid variant strings (same rules as above).  All remaining columns must
-        be numeric.
-
-    Args:
-        file_path: Absolute or relative path to the CSV file.
-        file_type: Either ``"experimental"`` or ``"embeddings"``.
-
-    Returns:
-        The loaded DataFrame, with column names normalised to lowercase for
-        ``"experimental"`` files (``variant`` and ``activity`` are always
-        lowercase on return).
-
-    Raises:
-        FileNotFoundError: If *file_path* does not exist.
-        ValueError: If *file_type* is not one of the accepted values, or if
-            the file fails any structural or content check.
-    """
-    valid_types = ('experimental', 'embeddings')
-    if file_type not in valid_types:
-        raise ValueError(
-            f"file_type must be one of {valid_types}, got '{file_type}'."
-        )
-
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"CSV file not found: '{file_path}'."
-        )
-
-    df = pd.read_csv(file_path) if file_type == 'embeddings' else pd.read_excel(file_path)
-
-    if df.empty:
-        raise ValueError(
-            f"CSV file '{file_path}' is empty."
-        )
-
-    if file_type == 'experimental':
-        # --- Normalise column names for case-insensitive matching ---
-        lower_col_map = {c: c.lower() for c in df.columns}
-        df = df.rename(columns=lower_col_map)
-
-        if 'variant' not in df.columns:
-            raise ValueError(
-                f"Experimental CSV '{file_path}' must contain a 'variant' column "
-                f"(case-insensitive). Found columns: {df.columns.tolist()}."
-            )
-        if 'activity' not in df.columns:
-            raise ValueError(
-                f"Experimental CSV '{file_path}' must contain an 'activity' column "
-                f"(case-insensitive). Found columns: {df.columns.tolist()}."
-            )
-
-        # --- Validate variant column ---
-        invalid = [v for v in df['variant'].astype(str) if not _is_valid_variant(v)]
-        if invalid:
-            shown = invalid[:10]
-            suffix = ' (and more)' if len(invalid) > 10 else ''
-            raise ValueError(
-                f"Experimental CSV '{file_path}' contains invalid value(s) in the "
-                f"'variant' column: {shown}{suffix}.\n"
-                f"Each entry must be 'WT', a single mutation token "
-                f"(e.g. 'A107M'), or multiple tokens joined by underscores "
-                f"(e.g. 'A107M_F73C'). No other values are accepted."
-            )
-
-        # --- Validate activity column ---
-        activity_numeric = pd.to_numeric(df['activity'], errors='coerce')
-        bad_activity = df.loc[activity_numeric.isna() & df['activity'].notna(), 'activity'].tolist()
-        if bad_activity:
-            shown = bad_activity[:10]
-            suffix = ' (and more)' if len(bad_activity) > 10 else ''
-            raise ValueError(
-                f"Experimental CSV '{file_path}': 'activity' column contains "
-                f"non-numeric value(s): {shown}{suffix}."
-            )
-
-    else:  # embeddings
-        # --- First column is the variant index ---
-        variant_col = df.columns[0]
-        invalid = [v for v in df[variant_col].astype(str) if not _is_valid_variant(v)]
-        if invalid:
-            shown = invalid[:10]
-            suffix = ' (and more)' if len(invalid) > 10 else ''
-            raise ValueError(
-                f"Embeddings CSV '{file_path}' contains invalid value(s) in the "
-                f"first (variant index) column '{variant_col}': {shown}{suffix}.\n"
-                f"Each entry must be 'WT', a single mutation token "
-                f"(e.g. 'A107M'), or multiple tokens joined by underscores "
-                f"(e.g. 'A107M_F73C'). No other values are accepted."
-            )
-
-        # --- All remaining columns must be numeric ---
-        data_cols = df.columns[1:]
-        non_numeric = [
-            c for c in data_cols
-            if not pd.api.types.is_numeric_dtype(df[c])
-        ]
-        if non_numeric:
-            raise ValueError(
-                f"Embeddings CSV '{file_path}' contains non-numeric data in "
-                f"column(s): {non_numeric}. All embedding dimensions must be numeric."
-            )
-        missing_vals = df[data_cols].isnull().sum().sum()
-        if missing_vals > 0:
-            raise ValueError(
-                f"Embeddings CSV '{file_path}' contains {missing_vals} missing "
-                f"value(s) in the embedding columns. All values must be present."
-            )
-
-        # Set the first column as the index to match expected caller conventions
-        df = df.set_index(variant_col)
+    # Sort embeddings by index (variant name)
+    df = df.sort_index()
 
     return df
 
@@ -215,11 +102,6 @@ def create_iteration_dataframes(
           ``activity_scaled``, ``iteration``.  Contains every variant in
           ``expected_variants``; untested rows have ``NaN`` activity/iteration.
     """
-    if not df_list:
-        raise ValueError(
-            "df_list is empty. At least one round DataFrame must be provided."
-        )
-
     processed_rounds = []
 
     for round_num, df in enumerate(df_list, start=1):

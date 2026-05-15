@@ -188,254 +188,28 @@ def first_round(
 # ---------------------------------------------------------------------------
 # Active-learning model (subsequent rounds)
 # ---------------------------------------------------------------------------
+def regression(embeddings: pd.DataFrame,
+               experimental_data: pd.DataFrame,
+               regression_type: str = 'randomforest',
+               random_seed: Optional[int] = None):
+    """Train a regression model then predict activity of every variant."""
 
-def top_layer(
-    iter_train: List[int],
-    iter_test: Optional[int],
-    embeddings_pd: pd.DataFrame,
-    labels_pd: pd.DataFrame,
-    measured_var: str,
-    regression_type: str = 'randomforest',
-    top_n: Optional[int] = None,
-    final_round: int = 10,
-    experimental: bool = False,
-) -> Union[Tuple, None]:
-    """Train a regression model and rank untested variants by predicted activity.
-
-    Trains on all variants whose ``iteration`` value appears in ``iter_train``,
-    and predicts on the held-out set (either ``iter_test`` or, when
-    ``experimental=True``, all rows with ``NaN`` iteration).
-
-    Supported regression models (``regression_type``):
-        ``"ridge"``, ``"lasso"``, ``"elasticnet"``, ``"linear"``,
-        ``"neuralnet"``, ``"randomforest"`` (default), ``"gradientboosting"``,
-        ``"knn"``, ``"gp"``
-
-    Args:
-        iter_train: List of iteration numbers whose variants form the training set.
-        iter_test: Iteration number for the test set.  Pass ``None`` in
-            experimental mode to use all unassigned (``NaN``) variants as the
-            test set.
-        embeddings_pd: DataFrame of variant embeddings (one row per variant).
-            Row order must match ``labels_pd``.
-        labels_pd: DataFrame with at minimum ``variant``, ``iteration``,
-            ``activity``, ``activity_scaled``, and ``activity_binary`` columns.
-            Row order must match ``embeddings_pd``.
-        measured_var: Name of the column in ``labels_pd`` to use as the
-            regression target (typically ``"activity"``).
-        regression_type: Which scikit-learn / XGBoost model to use.
-        top_n: Reserved for future use (currently unused).
-        final_round: Number of top predictions to include when computing
-            summary metrics (``median_activity_scaled``, etc.).
-        experimental: If ``True``, operate in experimental mode:
-            - Test set = variants with ``NaN`` iteration (not yet measured).
-            - MSE / R² are not computed (no ground truth).
-            - Returns a simplified 3-tuple.
-
-    Returns:
-        **Experimental mode** (``experimental=True``):
-            ``(this_round_variants, df_test, df_sorted_all)``
-
-            - ``this_round_variants`` — Series of variant names used for training.
-            - ``df_test`` — predictions for all untested variants, unsorted.
-            - ``df_sorted_all`` — all variants ranked by predicted activity.
-
-        **Simulation mode** (``experimental=False``):
-            ``(train_error, test_error, train_r_squared, test_r_squared, alpha,
-            median_activity_scaled, top_activity_scaled, top_variant,
-            top_final_round_variants, activity_binary_percentage,
-            spearman_corr, df_test, this_round_variants)``
-    """
-    # --- Validate regression_type early ---
-    if regression_type not in _VALID_REGRESSION_TYPES:
-        raise ValueError(
-            f"Unknown regression_type '{regression_type}'. "
-            f"Must be one of: {sorted(_VALID_REGRESSION_TYPES)}."
-        )
-
-    # --- Validate measured_var ---
-    if measured_var not in labels_pd.columns:
-        raise ValueError(
-            f"measured_var '{measured_var}' is not a column in labels_pd. "
-            f"Available columns: {list(labels_pd.columns)}."
-        )
-
-    required_label_cols = {'variant', 'iteration', 'activity_scaled', 'activity_binary'}
-    missing_cols = required_label_cols - set(labels_pd.columns)
-    if missing_cols:
-        raise ValueError(
-            f"labels_pd is missing required column(s): {sorted(missing_cols)}. "
-            f"Ensure labels_pd was produced by create_iteration_dataframes()."
-        )
-
-    # --- Validate alignment in experimental mode ---
-    if experimental:
-        if labels_pd['variant'].tolist() != embeddings_pd.index.tolist():
-            raise ValueError(
-                'Embeddings and labels are not aligned: the variant order differs. '
-                'Ensure both are sorted by variant name before calling top_layer() '
-                '(see README §3, Step 4).'
-            )
-
-    # --- Validate that embeddings and labels have the same number of rows ---
-    if len(embeddings_pd) != len(labels_pd):
-        raise ValueError(
-            f"embeddings_pd has {len(embeddings_pd)} rows but labels_pd has "
-            f"{len(labels_pd)} rows. They must have the same number of rows in "
-            f"the same order."
-        )
-
-    # Reset indices so positional selection with .loc is safe.
-    embeddings_pd = embeddings_pd.reset_index(drop=True)
-    labels_pd = labels_pd.reset_index(drop=True)
-    iteration = labels_pd['iteration']
-
-    # --- Build train / test split ---
-    idx_train = iteration[iteration.isin(iter_train)].index.to_numpy()
-    if len(idx_train) == 0:
-        raise ValueError(
-            f"No training variants found for iter_train={iter_train}. "
-            f"Check that the iteration values in labels_pd match iter_train."
-        )
-
-    if iter_test is not None:
-        idx_test = iteration[iteration == iter_test].index.to_numpy()
-        if len(idx_test) == 0:
-            raise ValueError(
-                f"No test variants found for iter_test={iter_test}. "
-                f"Check that the iteration values in labels_pd match iter_test."
-            )
-    else:
-        idx_test = iteration[iteration.isna()].index.to_numpy()
-        if len(idx_test) == 0:
-            warnings.warn(
-                "No untested variants (NaN iteration) found in labels_pd. "
-                "The prediction pool is empty — all variants have been measured. "
-                "df_test will be empty.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-    X_train = embeddings_pd.loc[idx_train]
-    X_test = embeddings_pd.loc[idx_test]
-
-    y_train = labels_pd.loc[idx_train, measured_var]
-    y_train_scaled = labels_pd.loc[idx_train, 'activity_scaled']
-    y_train_binary = labels_pd.loc[idx_train, 'activity_binary']
-
-    if iter_test is not None:
-        idx_test_mask = iteration.isin([iter_test])
-    else:
-        idx_test_mask = iteration.isna()
-    y_test = labels_pd.loc[idx_test_mask, measured_var]
-    y_test_scaled = labels_pd.loc[idx_test_mask, 'activity_scaled']
-    y_test_binary = labels_pd.loc[idx_test_mask, 'activity_binary']
-
-    # --- Check embedding dimensionality consistency ---
-    if not experimental and X_train.shape[1] != X_test.shape[1]:
-        raise ValueError(
-            f"Training embeddings have {X_train.shape[1]} dimensions but test "
-            f"embeddings have {X_test.shape[1]} dimensions. All variants must use "
-            f"the same PLM and extraction layer (see README §3)."
-        )
+    X = embeddings.loc[experimental_data.index] # sorts embeddings according to the order in experimental_data
+    y = experimental_data.iloc[:, 0]    # takes the first column of experimental_data that isn't the labels
 
     # --- Build and fit model ---
     model = _build_model(regression_type)
-    model.fit(X_train, y_train)
+    model.fit(X=X, y=y)
 
-    y_pred_train = model.predict(X_train)
-    y_pred_test = model.predict(X_test) if len(X_test) > 0 else np.array([])
+    # make activity prediction for each item in the embeddings
+    y_pred = model.predict(X=embeddings)
 
-    y_std_train = np.zeros(len(y_pred_train))
-    y_std_test = np.zeros(len(y_pred_test))
+    # make this into a dataframe and combine with the experimental data
+    predictions_df = pd.DataFrame(data={'y_pred': y_pred},
+                                  index=embeddings.index.tolist())
+    predictions_df['y_actual'] = experimental_data['activity']
+    return predictions_df
 
-    # --- Metrics ---
-    train_error = mean_squared_error(y_train, y_pred_train)
-    train_r_squared = r2_score(y_train, y_pred_train)
-
-    if not experimental:
-        test_error = mean_squared_error(y_test, y_pred_test)
-        test_r_squared = r2_score(y_test, y_pred_test)
-    else:
-        test_error = None
-        test_r_squared = None
-
-    if regression_type in ('ridge', 'lasso', 'elasticnet'):
-        alpha = model.alpha_
-    else:
-        alpha = 0
-
-    dist_train = cdist(X_train, X_test, metric='euclidean').min(axis=1) if len(X_test) > 0 else np.full(len(X_train), np.nan)
-    dist_test = (
-        None
-        if experimental
-        else cdist(X_test, X_train, metric='euclidean').min(axis=1)
-    )
-
-    # --- Assemble result DataFrames ---
-    df_train = pd.DataFrame({
-        'variant': labels_pd.loc[idx_train, 'variant'].values,
-        'y_pred': y_pred_train,
-        'y_actual': y_train.values,
-        'y_actual_scaled': y_train_scaled.values,
-        'y_actual_binary': y_train_binary.values,
-        'dist_metric': dist_train,
-        'std_predictions': y_std_train,
-    })
-    df_test = pd.DataFrame({
-        'variant': labels_pd.loc[idx_test, 'variant'].values,
-        'y_pred': y_pred_test,
-        'y_actual': y_test.values,
-        'y_actual_scaled': y_test_scaled.values,
-        'y_actual_binary': y_test_binary.values,
-        'dist_metric': dist_test,
-        'std_predictions': y_std_test,
-    })
-
-    df_sorted_all = (
-        pd.concat([df_train, df_test])
-        .sort_values('y_pred', ascending=False)
-        .reset_index(drop=True)
-    )
-
-    this_round_variants = df_train['variant']
-
-    if experimental:
-        return this_round_variants, df_test, df_sorted_all
-
-    # --- Summary metrics (simulation mode only) ---
-    top_slice = df_sorted_all.loc[:final_round]
-    median_activity_scaled = top_slice['y_actual_scaled'].median()
-    top_activity_scaled = top_slice['y_actual_scaled'].max()
-    top_variant = df_sorted_all.loc[
-        df_sorted_all['y_actual_scaled'] == top_activity_scaled, 'variant'
-    ].values[0]
-    top_final_round_variants = ','.join(top_slice['variant'].tolist())
-    spearman_corr = (
-        df_sorted_all[['y_pred', 'y_actual']].corr(method='spearman').iloc[0, 1]
-    )
-    activity_binary_percentage = top_slice['y_actual_binary'].mean()
-
-    return (
-        train_error,
-        test_error,
-        train_r_squared,
-        test_r_squared,
-        alpha,
-        median_activity_scaled,
-        top_activity_scaled,
-        top_variant,
-        top_final_round_variants,
-        activity_binary_percentage,
-        spearman_corr,
-        df_test,
-        this_round_variants,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
 
 def _build_model(regression_type: str):
     """Instantiate the chosen scikit-learn / XGBoost regression model.
