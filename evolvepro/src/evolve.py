@@ -1,26 +1,12 @@
-from evolvepro.src.data import *
 from evolvepro.src.model import regression
+import pandas as pd
+from typing import Optional
+import os
 
-def evolve(
-        round_name: str,
-        embeddings_files: list,
-        round_files: list,
-        output_dir: Optional[str] = None,
-):
-    """
-    Original evolve_experimental() and evolve_experimental_multi() functions are the same thing but
-    with slightly different handling. I'm cleaning them up and merging them into one thing function.
-
-    Args:
-        round_name:
-        embeddings_file:
-        round_files:
-        wt_fasta_path:
-        output_dir:
-
-    Returns:
-
-    """
+def evolve(round_name: str,
+           embeddings_files: list,
+           round_files: list,
+           output_dir: Optional[str] = None):
 
     # Load experimental data into df
     dfs = []
@@ -49,3 +35,19 @@ def evolve(
     predictions_df.to_csv(os.path.join(output_dir, f"{round_name}_predictions.csv"))
 
     return predictions_df
+
+
+def validate_csv(file_path: str, file_type: str) -> pd.DataFrame:
+    """Load and validate a CSV file used by EvolvePro."""
+
+    if file_type == 'embeddings':
+        df = pd.read_csv(file_path, index_col=0)    # turns the variant name into the index
+    elif file_type == 'experimental':
+        df = pd.read_excel(file_path, index_col=0)   # turns the variant name into the index
+    else:
+        raise ValueError(f"Invalid file type: {file_type}")
+
+    # Sort embeddings by index (variant name)
+    df = df.sort_index()
+
+    return df

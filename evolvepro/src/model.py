@@ -1,16 +1,3 @@
-"""
-model.py — Active-learning model for EvolvePro.
-
-Two public functions:
-
-- ``first_round`` — selects the initial panel of variants to test before any
-  measurements exist, using either random sampling or diversity-maximising
-  K-medoids clustering.
-
-- ``top_layer`` — trains a regression model on the measured variants and
-  predicts activity for all untested variants, returning ranked candidates for
-  the next round.
-"""
 
 import warnings
 from typing import List, Optional, Tuple, Union
@@ -37,11 +24,6 @@ _VALID_REGRESSION_TYPES = frozenset({
 _VALID_FIRST_ROUND_STRATEGIES = frozenset({
     'random', 'diverse_medoids', 'explicit_variants',
 })
-
-
-# ---------------------------------------------------------------------------
-# First-round variant selection
-# ---------------------------------------------------------------------------
 
 def first_round(
     labels: pd.DataFrame,
