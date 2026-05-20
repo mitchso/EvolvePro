@@ -13,9 +13,6 @@ output/
 # Python package info
 evolvepro.egg-info
 
-# Old environment file
-environment_old.yml
-
 # Specific directory
 scripts/exp/check_embeddings/
 external/

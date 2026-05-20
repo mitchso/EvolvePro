@@ -1,0 +1,5 @@
+channels:
+  - pytorch
+
+dependencies:
+  - cudatoolkit # adds this if the OS is linux
