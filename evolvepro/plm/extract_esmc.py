@@ -1,37 +1,19 @@
 #!/usr/bin/env python3 -u
 
-# Updated from extrac_esm_legacy.py to incorporate the new esm package which can access ESM-C and ESM-3
+# Updated to incorporate the new esm package which can access ESM-C
 
-import csv
-import pathlib
 import torch
-from Bio import SeqIO
+import csv
 from esm.models.esmc import ESMC
-from esm.models.esm3 import ESM3
-from esm.sdk.api import ESMProtein, LogitsConfig, SamplingConfig
-
-
-def get_device(nogpu=False):
-    if nogpu:
-        return torch.device("cpu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def parse_fasta(fasta_file: pathlib.Path) -> list[tuple[str, str]]:
-    """Parse a FASTA file into a list of (label, sequence) tuples."""
-    return [(record.id, str(record.seq)) for record in SeqIO.parse(handle=fasta_file,
-                                                                   format="fasta")]
+from esm.sdk.api import ESMProtein, LogitsConfig
+from evolvepro.plm.helpers import *
 
 
 def load_model(model: str, device: torch.device, login_token: str = None):
     """Load either an ESMC or ESM3 model depending on the model string."""
 
     if model.startswith("esm3"):
-        raise ValueError("ESM3 models are not supported. Please use ESMC instead.")
+        raise ValueError("ESM3 models are not supported (requires paid API or special access). Please use ESMC instead.")
     elif model.startswith("esmc"):
         client = ESMC.from_pretrained(model).to(device)
     else:
@@ -55,7 +37,7 @@ def get_embeddings(client, seq: str):
 
 
 def extract_embeddings(model: str,
-                       fasta_file: str,
+                       fasta_files: str | list[str],
                        output_csv: str,
                        truncation_seq_length: int = 1022,
                        login_token: str = None):
@@ -63,11 +45,17 @@ def extract_embeddings(model: str,
     device = get_device()
     print(f"Using device: {device}")
 
-    client, model_family = load_model(model=model, device=device, login_token=login_token)
+    client = load_model(model=model, device=device, login_token=login_token)
     print(f"Loaded model: {model}")
 
-    sequences = parse_fasta(fasta_file)
-    print(f"Read {fasta_file} with {len(sequences)} sequences")
+    if isinstance(fasta_files, str):
+        fasta_files = [fasta_files]
+
+    sequences = []
+    for fasta_file in fasta_files:
+        seqs = parse_fasta(fasta_file)
+        sequences.extend(seqs)
+        print(f"Read {fasta_file} with {len(seqs)} sequences")
 
     if pathlib.Path(output_csv).exists():
         print(f"Output file {output_csv} already exists. Exiting.")

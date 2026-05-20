@@ -1,4 +1,4 @@
-name: esm3
+name: esmc
 
 channels:
   - pytorch

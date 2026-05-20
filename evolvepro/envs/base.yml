@@ -1,4 +1,4 @@
-name: EvolvePro
+name: evolvepro
 channels:
   - conda-forge
   - pytorch

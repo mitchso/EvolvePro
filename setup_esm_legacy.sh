@@ -6,8 +6,8 @@ echo "Setting up esm_legacy environment..."
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="envs/esm_legacy.yml"
-LINUX_OVERLAY="envs/plm_linux.yml"
+BASE="evolvepro/envs/esm_legacy.yml"
+LINUX_OVERLAY="evolvepro/envs/plm_linux.yml"
 
 if [[ "$(uname)" == "Darwin" ]]; then
     echo "macOS detected"

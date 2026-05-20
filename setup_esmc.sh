@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Print that the script is running:
-echo "Setting up ESM3 environment..."
+echo "Setting up ESM-C environment..."
 
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="envs/esm3.yml"
+BASE="envs/esmc.yml"
 LINUX_OVERLAY="envs/plm_linux.yml"
 
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -19,4 +19,4 @@ else
     conda-merge "$BASE" "$LINUX_OVERLAY" | conda env create -f -
 fi
 
-echo "ESM3 environment setup complete!"
+echo "ESM-C environment setup complete!"

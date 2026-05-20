@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 # This is meant to be used with the fair-esm package.
-# Newer models (ESM-3, ESM-C) need to be accessed using the new esm package
+# ESM-C needs to be accessed using the new esm package
 
 import os
 import shutil
@@ -14,206 +14,156 @@ import pathlib
 import pandas as pd
 import torch
 import re
+import csv
+import pathlib
+import torch
+from Bio import SeqIO
+from evolvepro.plm.helpers import *
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 
 
-def create_parser():
-    parser = argparse.ArgumentParser(
-        description="Extract per-token representations and model outputs for sequences in a FASTA file"
-    )
-
-    parser.add_argument(
-        "model_location",
-        type=str,
-        help="PyTorch model file OR name of pretrained model to download (see README for models)",
-    )
-    parser.add_argument(
-        "fasta_file",
-        type=pathlib.Path,
-        help="FASTA file on which to extract representations",
-    )
-    parser.add_argument(
-        "output_dir",
-        type=pathlib.Path,
-        help="output directory for extracted representations",
-    )
-
-    parser.add_argument("--toks_per_batch", type=int, default=4096, help="maximum batch size")
-
-    parser.add_argument(
-        "--repr_layers",
-        type=int,
-        default=[-1],
-        nargs="+",
-        help="layers indices from which to extract representations (0 to num_layers, inclusive)",
-    )
-    parser.add_argument(
-        "--include",
-        type=str,
-        nargs="+",
-        choices=["mean", "per_tok", "bos", "contacts"],
-        help="specify which representations to return",
-        required=True,
-    )
-
-    parser.add_argument(
-        "--truncation_seq_length",
-        type=int,
-        default=1022,
-        help="truncate sequences longer than the given value",
-    )
-
-    parser.add_argument("--nogpu", action="store_true", help="Do not use GPU even if available")
-
-    return parser
+def load_model(model: str, device: torch.device):
+    """Loads the model"""
+    esm_model, alphabet = pretrained.load_model_and_alphabet(model)
+    esm_model = esm_model.to(device)
+    esm_model.eval()
+    return esm_model, alphabet
 
 
-def get_device(nogpu=False):
-    if nogpu:
-        return torch.device("cpu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+def get_embeddings(client, seq: str):
+    esm_model, alphabet = client
+    device = next(esm_model.parameters()).device
+
+    # Tokenize: batch_converter expects a list of (label, sequence) tuples
+    batch_converter = alphabet.get_batch_converter()
+    _, _, tokens = batch_converter([("seq", seq)])
+    tokens = tokens.to(device)
+
+    # Run the forward pass, requesting the last transformer layer's output.
+    # num_layers tells us which layer index to ask for.
+    num_layers = esm_model.num_layers
+    result = esm_model(tokens, repr_layers=[num_layers])
+
+    # result["representations"][num_layers] has shape (1, L+2, D):
+    #   - 1        : batch size (we process one sequence at a time)
+    #   - L+2      : sequence length + BOS and EOS special tokens
+    #   - D        : embedding dimension (e.g. 480 for ESM2-35M, 1280 for ESM2-650M)
+    token_embeddings = result["representations"][num_layers]
+
+    # Strip the BOS (index 0) and EOS (index -1) tokens, then mean-pool
+    embeddings = token_embeddings[0, 1:-1].mean(0)
+    embeddings = embeddings.clone().cpu()
+    return embeddings
 
 
-def make_directory(path: pathlib.Path, print_error=True) -> pathlib.Path:
-    try:
-        path.mkdir(parents=True, exist_ok=False)
-        print(f"Created directory {path}.")
-        return path
-    except FileExistsError:
-        if print_error:
-            print(f"Output directory {path} already exists.")
-        dir_string = str(path)
-        match = re.search(pattern=r'^(.*?)_(\d+)$', string=dir_string)
-        if match:
-            prefix, number = match.group(1), int(match.group(2))
-            suffix = number + 1
-            dir_string = f"{prefix}_{suffix}"
-        else:
-            suffix = 1
-            dir_string = f"{path}_{suffix}"
+def get_batch_embeddings(client, labels: list[str], seqs: list[str]):
+    """Run a single batched forward pass and return mean-pooled embeddings for each sequence.
 
-        path = pathlib.Path(dir_string)
-        # recursive until you find a path that doesn't already exist'
-        return make_directory(path, print_error=False)
+    Args:
+        client:  (model, alphabet) tuple from load_model()
+        labels:  list of sequence identifiers (variant names)
+        seqs:    list of amino acid sequence strings, all the same length
+
+    Returns:
+        list of (label, embedding) tuples, one per sequence in the batch
+    """
+    esm_model, alphabet = client
+    device = next(esm_model.parameters()).device
+    num_layers = esm_model.num_layers
+
+    # Tokenize each sequence individually, then stack into a single batch tensor.
+    # Because all sequences are the same length, the resulting tokens tensors are
+    # all the same shape and can be stacked directly without any padding.
+    batch_converter = alphabet.get_batch_converter()
+    token_list = []
+    for label, seq in zip(labels, seqs):
+        _, _, tokens = batch_converter([(label, seq)])
+        token_list.append(tokens[0])  # tokens[0]: shape (L+2,) — one sequence
+    tokens = torch.stack(token_list).to(device)  # shape: (batch_size, L+2)
+
+    result = esm_model(tokens, repr_layers=[num_layers])
+
+    # representations shape: (batch_size, L+2, D)
+    # Move to CPU and float32 immediately to free device memory
+    representations = result["representations"][num_layers].to(device="cpu", dtype=torch.float32)
+
+    # Strip BOS (index 0) and EOS (index -1), then mean-pool across residues.
+    # No per-sequence length tracking needed since all sequences are the same length.
+    embeddings = representations[:, 1:-1, :].mean(dim=1)  # shape: (batch_size, D)
+
+    return list(zip(labels, embeddings.unbind(dim=0)))
 
 
-def run(args):
-    model, alphabet = pretrained.load_model_and_alphabet(args.model_location)
-    model.eval()
-    if isinstance(model, MSATransformer):
-        raise ValueError(
-            "This script currently does not handle models with MSA input (MSA Transformer)."
-        )
+def extract_embeddings(model: str,
+                       fasta_files: str | list[str],
+                       output_csv: str,
+                       truncation_seq_length: int = 1022,
+                       seqs_per_batch: int = 16):
+    """Extract mean-pooled ESM embeddings for all sequences in one or more FASTA files.
 
-    device = get_device(args.nogpu)
-    model = model.to(device, dtype=torch.float32)  # testing whether bfloat16 increases performance on my mac
+    All sequences must be the same length (e.g. single-mutant libraries of a fixed
+    protein). Sequences are processed in fixed-size batches for hardware efficiency.
+
+    Args:
+        model:                  fair-esm model name (e.g. 'esm2_t36_3B_UR50D')
+        fasta_files:            path or list of paths to FASTA files
+        output_csv:             path for the output CSV file
+        truncation_seq_length:  sequences longer than this are truncated before embedding
+        seqs_per_batch:         number of sequences per forward pass; reduce if you run
+                                out of memory, increase if hardware is underutilized
+    """
+    device = get_device()
     print(f"Using device: {device}")
 
-    dataset = FastaBatchedDataset.from_file(args.fasta_file)
-    batches = dataset.get_batch_indices(args.toks_per_batch, extra_toks_per_seq=1)
-    data_loader = torch.utils.data.DataLoader(dataset, collate_fn=alphabet.get_batch_converter(), batch_sampler=batches)
-    print(f"Read {args.fasta_file} with {len(dataset)} sequences")
+    client = load_model(model=model, device=device)
+    print(f"Loaded model: {model}")
 
-    args.output_dir = make_directory(args.output_dir)
-    print(f"Output directory: {args.output_dir}")
+    if isinstance(fasta_files, str):
+        fasta_files = [fasta_files]
 
-    return_contacts = "contacts" in args.include
+    sequences = []
+    for fasta_file in fasta_files:
+        seqs = parse_fasta(fasta_file)
+        sequences.extend(seqs)
+        print(f"Read {fasta_file} with {len(seqs)} sequences")
 
-    assert all(-(model.num_layers + 1) <= i <= model.num_layers for i in args.repr_layers)
-    repr_layers = [(i + model.num_layers + 1) % (model.num_layers + 1) for i in args.repr_layers]
+    # Truncate and validate that all sequences are the same length
+    sequences = [(label, seq[:truncation_seq_length]) for label, seq in sequences]
+    seq_lengths = set(len(seq) for _, seq in sequences)
+    if len(seq_lengths) > 1:
+        raise ValueError(f"All sequences must be the same length, but found lengths: {seq_lengths}")
 
-    with torch.no_grad():
-        for batch_idx, (labels, strs, toks) in enumerate(data_loader):
-            print(f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)")
+    if pathlib.Path(output_csv).exists():
+        print(f"Output file {output_csv} already exists. Exiting.")
+        return
 
-            toks = toks.to(device=device)
-            print(f"Device: {toks.device}")
+    # Split into fixed-size batches
+    batches = [sequences[i:i + seqs_per_batch] for i in range(0, len(sequences), seqs_per_batch)]
+    print(f"Processing {len(sequences)} sequences in {len(batches)} batches of up to {seqs_per_batch}")
 
-            out = model(toks, repr_layers=repr_layers, return_contacts=return_contacts)
+    with torch.no_grad(), open(output_csv, "w") as out:
+        writer = csv.writer(out)
+        header_written = False
+        sequences_processed = 0
 
-            # unused call to logits?
-            # logits = out["logits"].to(device="cpu", dtype=torch.float32)
-            # print(f"Device: {logits.device}, dtype: {logits.dtype}, shape: {logits.shape}")
+        for batch_idx, batch in enumerate(batches):
+            batch_labels = [label for label, _ in batch]
+            batch_seqs = [seq for _, seq in batch]
+            print(f"Processing batch {batch_idx + 1} of {len(batches)} ({len(batch_labels)} sequences)")
 
-            representations = {layer: t.to(device="cpu", dtype=torch.float32) for layer, t in out["representations"].items()}
+            batch_results = get_batch_embeddings(client=client, labels=batch_labels, seqs=batch_seqs)
 
-            if return_contacts:
-                contacts = out["contacts"].to(device="cpu", dtype=torch.float32)
+            for label, embedding in batch_results:
+                sequences_processed += 1
+                print(f"  Writing sequence {sequences_processed} of {len(sequences)}: {label}")
 
-            for i, label in enumerate(labels):
-                args.output_file = args.output_dir / "pt" / f"{label}.pt"
-                args.output_file.parent.mkdir(parents=True, exist_ok=True)
-                result = {"label": label}
-                truncate_len = min(args.truncation_seq_length, len(strs[i]))
-                # Call clone on tensors to ensure tensors are not views into a larger representation
-                # See https://github.com/pytorch/pytorch/issues/1995
-                if "per_tok" in args.include:
-                    result["representations"] = {
-                        layer: t[i, 1 : truncate_len + 1].clone()
-                        for layer, t in representations.items()
-                    }
-                if "mean" in args.include:
-                    result["mean_representations"] = {
-                        layer: t[i, 1 : truncate_len + 1].mean(0).clone()
-                        for layer, t in representations.items()
-                    }
-                if "bos" in args.include:
-                    result["bos_representations"] = {
-                        layer: t[i, 0].clone() for layer, t in representations.items()
-                    }
-                if return_contacts:
-                    result["contacts"] = contacts[i, : truncate_len, : truncate_len].clone()
+                if not header_written:
+                    writer.writerow(["variant"] + [f"dim_{j}" for j in range(len(embedding))])
+                    header_written = True
 
-                torch.save(result, args.output_file)
+                writer.writerow([label] + embedding.tolist())
 
-    print(f"Saved representations to {args.output_dir}")
+            out.flush()
 
-def concatenate_files(output_dir, output_csv):
-
-    # Get all .pt files in the output directory
-    files = []
-    for r, d, f in os.walk(output_dir / "pt"):
-        for file in f:
-            if '.pt' in file:
-                files.append(os.path.join(r, file))
-
-    # Load each file and append to a list of dataframes
-    dataframes = []
-    for file_path in files:
-        file_data = torch.load(file_path, weights_only=True)
-        label = file_data['label']
-        representations = file_data['mean_representations']
-        key, tensor = representations.popitem()
-        row_name = label
-        row_data = tensor.tolist()
-        new_df = pd.DataFrame([row_data], index=[row_name])
-        dataframes.append(new_df)
-
-    # Concatenate all dataframes
-    if dataframes:
-        concatenated_df = pd.concat(dataframes)
-        print("Shape of concatenated DataFrame:", concatenated_df.shape)
-        concatenated_df.to_csv(output_dir / output_csv, index=True)
-        print(f"Saved concatenated representations to {output_csv}")
-    else:
-        print("No data to concatenate.")
-
-def main():
-    parser = create_parser()
-    args = parser.parse_args()
-    
-    run(args)
-
-    fasta_file_name = args.fasta_file.stem
-    output_csv = f"{fasta_file_name}_{args.model_location}.csv"
-    concatenate_files(args.output_dir, output_csv)
-
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Embeddings saved to {output_csv}.")
