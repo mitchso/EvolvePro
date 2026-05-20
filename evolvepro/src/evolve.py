@@ -3,10 +3,9 @@ import sys
 import pandas as pd
 from evolvepro.src.model import regression
 
-def evolve(round_name: str,
-           embeddings_files: list,
+def evolve(embeddings_files: list,
            round_files: list,
-           output_dir: str = None,
+           output_file: str = None,
            regression_model: str = 'randomforest'):
 
     # Load experimental data into df
@@ -34,8 +33,8 @@ def evolve(round_name: str,
                                 regression_model=regression_model)
 
     # Write results
-    predictions_df.to_csv(os.path.join(output_dir, f"{round_name}_predictions.csv"))
-    print(f"Wrote predictions to {round_name}_predictions.csv'")
+    predictions_df.to_csv(output_file)
+    print(f"Wrote predictions to {output_file}")
 
     return predictions_df
 
