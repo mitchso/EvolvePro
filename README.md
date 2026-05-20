@@ -26,13 +26,13 @@ The EVOLVEpro workflow consists of four main steps:
 
 Generate and clean FASTA and CSV files containing protein variant sequences and their corresponding activity data.
 
-For detailed instructions, see the [Process README](scripts/process/README.md).
+For detailed instructions, see the [Process README](src/README.md).
 
 ### 2. Embedding extraction
 
 Extract protein language model embeddings for all variants using various PLM models.
 
-For detailed instructions, see the [PLM README](scripts/plm/README.md).
+For detailed instructions, see the [PLM README](/plm/README.md).
 
 ### 3. Zero-shot suggestions
 
@@ -44,7 +44,7 @@ Apply the EVOLVEpro model to optimize protein activity.
 #### Experimental Workflow
 Use this workflow for iterative experimental optimization of protein activity.
 
-For detailed instructions, see the [Experimental README](scripts/exp/README.md).
+For detailed instructions, see the [Experimental README](src/README.md).
 
 ## Getting Started
 
@@ -81,7 +81,7 @@ These environments are kept separate to maintain clean dependencies and avoid co
 
 ## Examples
 
-## Issues
+See the [examples](examples) directory for example scripts.
 
 ## Citation
 
