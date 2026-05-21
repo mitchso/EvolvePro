@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Print that the script is running:
-echo "Setting up esm_legacy environment..."
+echo "Setting up ESM2 environment..."
 
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="evolvepro/envs/esm_legacy.yml"
+BASE="evolvepro/envs/esm2.yml"
 LINUX_OVERLAY="evolvepro/envs/plm_linux.yml"
 
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -19,4 +19,4 @@ else
     conda-merge "$BASE" "$LINUX_OVERLAY" | conda env create -f -
 fi
 
-echo "esm_legacy environment setup complete!"
+echo "ESM2 environment setup complete!"

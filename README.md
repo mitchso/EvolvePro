@@ -24,9 +24,9 @@ The EVOLVEpro workflow consists of four main steps:
 
 ### 1. Process
 
-Generate and clean FASTA and CSV files containing protein variant sequences and their corresponding activity data.
+Generate FASTA files containing protein variant sequences.
 
-For detailed instructions, see the [Process README](src/README.md).
+For detailed instructions, see the [Experimental README](https://github.com/mitchso/EvolvePro/tree/main/evolvepro/src).
 
 ### 2. Embedding extraction
 
@@ -36,6 +36,9 @@ For detailed instructions, see the [PLM README](plm/README.md).
 
 ### 3. Zero-shot suggestions
 
+Use this workflow to generate initial mutations for the experimental evolution process.
+
+For detailed instructions, see the [Experimental README](https://github.com/mitchso/EvolvePro/tree/main/evolvepro/src).
 
 ### 4. Regression
 
@@ -44,7 +47,7 @@ Apply the EVOLVEpro model to optimize protein activity.
 #### Experimental Workflow
 Use this workflow for iterative experimental optimization of protein activity.
 
-For detailed instructions, see the [Experimental README](src/README.md).
+For detailed instructions, see the [Experimental README](https://github.com/mitchso/EvolvePro/tree/main/evolvepro/src).
 
 ## Getting Started
 
@@ -69,7 +72,7 @@ conda activate evolvepro
 Dependencies are different depending on which PLM you want to use. Because of this, there is one environment for ESM-1/ESM-2 family, and a different environment for ESM-C family.
 
 ```bash
-sh setup_esm_legacy.sh
+sh setup_esm2.sh
 conda activate esm_legacy
 ```
 ```bash

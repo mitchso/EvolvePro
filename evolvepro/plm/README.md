@@ -1,6 +1,6 @@
 # Protein Language Model Embedding Extraction
 
-Two scripts for extracting mean-pooled protein sequence embeddings: `extract_esmc.py` for EvolutionaryScale's ESMC models, and `extract_esm_legacy.py` for Meta's ESM-2 models.
+Two scripts for extracting mean-pooled protein sequence embeddings: `extract_esmc.py` for EvolutionaryScale's ESMC models, and `extract_esm2.py` for Meta's ESM-2 models.
 
 Both produce an identical CSV format and accept one or more FASTA files as input. Always include the wild-type sequence alongside your mutant library.
 
@@ -20,9 +20,9 @@ extract_embeddings(
 )
 ```
 
-**ESM-2** (use the `esm_legacy` conda environment):
+**ESM-2** (use the `esm2` conda environment):
 ```python
-from evolvepro.plm.extract_esm_legacy import extract_embeddings
+from evolvepro.plm.extract_esm2 import extract_embeddings
 
 extract_embeddings(
     model='esm2_t33_650M_UR50D',
@@ -54,7 +54,7 @@ One row per sequence. The `variant` column uses the FASTA header (`>name` line) 
 | `esmc_600m` | 600M | 1152 | ~8 GB |
 
 
-### ESM-2 (`extract_esm_legacy.py`)
+### ESM-2 (`extract_esm2.py`)
 
 | Model string | Parameters | Embedding dim | Approx. VRAM |
 |---|---|---|---|

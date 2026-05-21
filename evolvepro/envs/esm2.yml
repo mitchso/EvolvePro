@@ -1,4 +1,4 @@
-name: esm_legacy
+name: esm2
 channels:
   - conda-forge
   - defaults
