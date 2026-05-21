@@ -16,7 +16,39 @@ evolvepro/src/
 ---
 ## Module reference
 
+### `process.py`
+
+**`generate_wt(wt_sequence, output_file)`**
+
+Writes a single-record FASTA with record ID `WT` from a protein sequence string.
+
+**`generate_single_aa_mutants(wt_sequence, output_file)`**
+
+Generates all possible single amino-acid substitutions across the full sequence and writes them to a FASTA file. Silent substitutions are skipped. Variant names follow standard notation: `<WT AA><position><mutant AA>` (1-based), e.g. `A107M`.
+
+**`generate_multi_mutants(wt_sequence, output_file, min_mutations, max_mutations, mutations_list)`**
+
+Given a list of mutations (e.g. from single-mutant screening), generates all valid combinatorial variants within the specified mutation count range. Combinations that mutate the same position twice are skipped. Multi-mutant names are underscore-joined: `A107M_F73C`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `min_mutations` | `int` | Minimum number of mutations per variant |
+| `max_mutations` | `int` | Maximum number of mutations per variant |
+| `mutations_list` | `list[str]` | Mutations to combine, e.g. `['A107M', 'F73C']` |
+
+---
+
+
+
 ### `evolve.py`
+
+**`zero_shot(embeddings_file: str, method: str = 'random', num_suggestions: int = 24, random_seed: int = 42)`**
+
+Selects an initial panel of variants to test before any measurements exist. Two strategies are supported:
+
+- `"random"` — uniform random sampling from all non-WT variants.
+- `"diverse_medoids"` — K-medoids clustering in embedding space; returns one medoid per cluster to maximize sequence diversity.
+
 
 **`evolve(embeddings_files, round_files, output_file, regression_model='randomforest')`**
 
@@ -38,17 +70,6 @@ The order of the entries in the embedding files and activity files does not matt
 
 ### `model.py`
 
-**`first_round(labels, embeddings, explicit_variants=None, num_mutants_per_round=16, first_round_strategy='random', embedding_type=None, random_seed=None)`**
-
-Selects an initial panel of variants to test before any measurements exist. Three strategies are supported:
-
-- `"random"` — uniform random sampling from all non-WT variants.
-- `"diverse_medoids"` — K-medoids clustering in embedding space; returns one medoid per cluster to maximise sequence diversity. Applies PCA (10 components) before clustering unless `embedding_type="embeddings_pca"`. Requires `scikit-learn-extra`.
-- `"explicit_variants"` — use a caller-supplied list of variant names.
-
-- 
-- #TODO: clean up first_round()
-
 **`regression(embeddings, experimental_data, regression_model='randomforest')`**
 
 Trains a regression model on tested variants and predicts activity for all variants in the embeddings matrix. Called internally by `evolve()` but can be used directly.
@@ -66,28 +87,6 @@ Supported `regression_model` values:
 | `"gradientboosting"` | XGBoost |
 | `"knn"` | k-nearest neighbours (k=10, distance-weighted, PCA pre-processing) |
 | `"gp"` | Gaussian process (RBF + white noise kernel) |
-
----
-
-### `process.py`
-
-**`generate_wt(wt_sequence, output_file)`**
-
-Writes a single-record FASTA with record ID `WT` from a protein sequence string.
-
-**`generate_single_aa_mutants(wt_sequence, output_file)`**
-
-Generates all possible single amino-acid substitutions across the full sequence and writes them to a FASTA file. Silent substitutions are skipped. Variant names follow standard notation: `<WT AA><position><mutant AA>` (1-based), e.g. `A107M`.
-
-**`generate_multi_mutants(wt_sequence, output_file, min_mutations, max_mutations, mutations_list)`**
-
-Given a list of mutations (e.g. from single-mutant screening), generates all valid combinatorial variants within the specified mutation count range. Combinations that mutate the same position twice are skipped. Multi-mutant names are underscore-joined: `A107M_F73C`.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `min_mutations` | `int` | Minimum number of mutations per variant |
-| `max_mutations` | `int` | Maximum number of mutations per variant |
-| `mutations_list` | `list[str]` | Mutations to combine, e.g. `['A107M', 'F73C']` |
 
 ---
 
