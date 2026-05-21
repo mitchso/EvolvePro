@@ -1,7 +1,47 @@
 import os
 import sys
 import pandas as pd
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn_extra.cluster import KMedoids
 from evolvepro.src.model import regression
+
+def zero_shot(embeddings_file: str,
+              method: str = 'random',
+              num_suggestions: int = 24,
+              random_seed: int = 42) -> list[str]:
+
+    # Load embeddings with variant names as index
+    embeddings = pd.read_csv(embeddings_file, index_col=0)
+
+    # Remove WT from the list of variants
+    embeddings_no_WT = embeddings.drop(index='WT', errors='ignore')
+
+    if method == 'random':
+        rng = np.random.default_rng(random_seed)
+        indices = rng.choice(len(embeddings_no_WT), size=num_suggestions, replace=False).tolist()
+        suggestions = embeddings_no_WT.iloc[indices].index.tolist()
+        return suggestions
+
+    elif method == 'kmedoids':
+        # PCA down to 10 dimensions before clustering
+        pca = PCA(n_components=10, random_state=random_seed)
+        embeddings_pca = pca.fit_transform(embeddings_no_WT.values)
+
+        # Cluster with KMedoids; each cluster center (medoid) is a real data point
+        km = KMedoids(
+            n_clusters=num_suggestions,
+            metric='euclidean',
+            random_state=random_seed,
+        ).fit(embeddings_pca)
+
+        # medoid_indices_ are row positions in embeddings_no_WT
+        suggestions = embeddings_no_WT.iloc[km.medoid_indices_].index.tolist()
+        return suggestions
+
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
 
 def evolve(embeddings_files: list,
            round_files: list,

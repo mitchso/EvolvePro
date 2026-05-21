@@ -161,20 +161,14 @@ Pass `WT.fasta` & `mutants.fasta` to a PLM extraction script (see `README_plm.md
 ### Step 3 — Select initial variants (no measurements yet)
 
 ```python
-from evolvepro.src.model import first_round
-import pandas as pd
+from evolvepro.src.model import zero_shot
 
-labels = pd.DataFrame({'variant': all_variant_names})
-embeddings = pd.read_csv('embeddings/mutants.csv', index_col=0)
+random_suggestions = zero_shot(embeddings_file="embeddings_esm2_650m.csv",
+                               num_suggestions=24,
+                               method="random",
+                               random_seed=42)
 
-labels_zero, iteration_zero, to_test = first_round(
-    labels=labels,
-    embeddings=embeddings,
-    num_mutants_per_round=16,
-    first_round_strategy='diverse_medoids',
-    random_seed=42,
-)
-print(to_test)  # variants to send to the lab
+print(random_suggestions)  # variants to send to the lab
 ```
 
 ### Step 4 — Predict after wet-lab measurements
