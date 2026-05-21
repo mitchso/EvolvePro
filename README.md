@@ -1,13 +1,13 @@
-# EVOLVEpro - reworked
+# EVOLVEpro fork
 
 This is my reworked version of EVOLVEpro (https://github.com/mat10d/EvolvePro).
 The main differences between this repo and the original are:
-- This codebase is trimmed down to only include necessary materials for running the evolvepro workflow on experimental datasets. The ability to analyze DMS datasets has been completely removed.
-- This codebase now supports embedding extractions from ESM models only, but has added support for ESM-C family models, whereas the original EvolvePro supports only up to ESM-2.
+- This codebase is trimmed down to only include necessary materials for running the evolvepro workflow on experimental datasets. The ability to analyze DMS datasets has been removed.
+- This codebase now supports embedding extractions from ESM models only, but has added support for ESM-C family models, whereas the original EvolvePro supports ESM-1/2.
 - Support for MPS on macs, to allow for GPU usage during embedding extraction.
-- Maintained the underlying logic of the original code but reimplemented to simplify inputs, outputs, and function calls (new usages are described below).
+- Maintained the underlying logic of the original code but restructured inputs, outputs, and function calls (new usages are described below).
 - Support for arbitrary regression models and user-defined parameters as desired - however the default is still a random forest model as recommended by EvolvePro.
-- Various internal changes to improve clarity and error-handling.
+- Additional error-handling and documentation.
 
 ## Overview
 
@@ -73,7 +73,7 @@ Dependencies are different depending on which PLM you want to use. Because of th
 
 ```bash
 sh setup_esm2.sh
-conda activate esm_legacy
+conda activate esm2
 ```
 ```bash
 sh setup_esmc.sh
