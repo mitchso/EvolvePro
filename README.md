@@ -32,7 +32,7 @@ For detailed instructions, see the [Process README](src/README.md).
 
 Extract protein language model embeddings for all variants using various PLM models.
 
-For detailed instructions, see the [PLM README](/plm/README.md).
+For detailed instructions, see the [PLM README](plm/README.md).
 
 ### 3. Zero-shot suggestions
 
@@ -51,7 +51,7 @@ For detailed instructions, see the [Experimental README](src/README.md).
 ### Install
 
 ```bash
-git clone https://github.com/mat10d/EvolvePro.git
+git clone https://github.com/mitchso/EvolvePro.git
 cd EvolvePro
 ```
 
